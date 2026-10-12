@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HarbourWatch</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="top">
+    <h1>HarbourWatch</h1>
+    <nav class="tabs" aria-label="Views">
+      <button type="button" id="tab-live" class="tab" aria-pressed="true">Map</button>
+      <button type="button" id="tab-reports" class="tab" aria-pressed="false">Reports</button>
+    </nav>
+    <div class="modes" role="group" aria-label="Data mode">
+      <button type="button" id="mode-live" class="tab" aria-pressed="true" title="Live feed: calls the live API and shows ships as they report">Live feed</button>
+      <button type="button" id="mode-offline" class="tab" aria-pressed="false" title="Offline replay: no live API calls; shows the history (NOAA and past aisstream data) of a day and replays it">Offline replay</button>
+    </div>
+    <span id="health" class="health" data-status="unknown" role="status">checking…</span>
+    <div id="summary" class="summary" aria-label="Ships by state"></div>
+    <span id="data-time" class="data-time" title="Newest position time in the feed (UTC)"></span>
+  </header>
+
+  <div id="banner" class="banner" role="alert" hidden>
+    <span id="banner-text"></span>
+    <button type="button" id="retry">Retry</button>
+  </div>
+
+  <main class="layout">
+    <section class="mapwrap" aria-label="Live ship map">
+      <form id="filters" class="filters" role="search" autocomplete="off">
+        <label class="check">Search <input id="q" type="search" title="Name or MMSI, on the map or in history" aria-label="Search name or MMSI"></label>
+        <div id="state-chips" class="chips" role="group" aria-label="Filter by state"></div>
+        <label class="check" title="All ships, those that start or end at a monitored port, other countries' ships that cross the country's waters, or the rest in the waters">Ships <select id="f-group" aria-label="Which ships"></select></label>
+        <select id="f-type" aria-label="Ship type"><option value="">All types</option></select>
+        <label class="check">Max ships <select id="f-limit" aria-label="Most ships on the map" title="Beyond this, the ships that arrived on the map first are dropped; pinned ships always stay">
+          <option value="250">250</option><option value="500">500</option><option value="1000">1000</option>
+          <option value="2000">2000</option><option value="5000">5000</option>
+        </select></label>
+        <small id="m-feed" class="muted" aria-live="polite"></small>
+        <details id="m-partners" class="m-ports">
+          <summary id="m-partners-sum">Source countries</summary>
+          <div id="m-partners-list" class="m-ports-list"></div>
+        </details>
+        <label class="check"><input id="f-pinned" type="checkbox"> Pinned only</label>
+        <span id="shown" class="shown" aria-live="polite"></span>
+        <button type="button" id="unhide" class="link" hidden></button>
+        <button type="button" id="f-reset" class="link">Reset</button>
+        <ul id="search-results" class="search-results" aria-label="Search results: on the map and history" hidden></ul>
+      </form>
+      <div id="replay-bar" class="replay-bar" hidden>
+        <span id="rp-focus" class="rp-focus">Replaying <b id="rp-focus-name"></b> <button type="button" id="rp-focus-exit" class="btn">All ships</button></span>
+        <label class="check rp-when">Day <select id="rp-day" aria-label="Day to replay"></select></label>
+        <label class="check rp-when">Time (UTC) <input id="rp-time" type="time" step="60" aria-label="Time of day, UTC"></label>
+        <button type="button" id="rp-play" class="btn" aria-pressed="false">▶ Play</button>
+        <label class="check">Speed <select id="rp-speed" aria-label="Replay speed">
+          <option value="1">1×</option><option value="10">10×</option><option value="60">60×</option>
+          <option value="300">300×</option><option value="900">900×</option><option value="3600">3600×</option>
+        </select></label>
+        <input id="rp-scrub" class="scrub" type="range" min="0" max="1439" value="0" aria-label="Time of day, UTC">
+        <span id="rp-clock" class="shown"></span>
+      </div>
+      <div id="map"></div>
+      <div id="map-status" class="map-status" hidden></div>
+    </section>
+
+    <aside class="side">
+      <section id="ship-detail" class="card" aria-live="polite" hidden></section>
+
+      <section class="card" aria-labelledby="h-pins">
+        <h2 id="h-pins">Pinned ships</h2>
+        <ul id="pins" class="list"></ul>
+      </section>
+
+      <section class="card" aria-labelledby="h-ports">
+        <h2 id="h-ports">Port queues</h2>
+        <p id="ports-hint" class="muted"></p>
+        <div id="ports" class="ports"></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-alerts">
+        <div class="card-head">
+          <h2 id="h-alerts">Alerts <span id="unread" class="badge" hidden></span></h2>
+          <span id="stream" class="stream" data-status="connecting">Connecting…</span>
+        </div>
+        <div class="alert-tools">
+          <div id="prio-chips" class="chips" role="group" aria-label="Filter by priority"></div>
+          <button type="button" id="ack-all" class="link">Acknowledge all</button>
+        </div>
+        <details class="settings">
+          <summary>Priority and notifications</summary>
+          <div class="settings-body">
+            <label>Dark ship <select id="prio-dark_ship"></select></label>
+            <label>Queue growth <select id="prio-queue_growth"></select></label>
+            <label>Notify me for <select id="notify-level">
+              <option value="high">High priority only</option>
+              <option value="medium">Medium and high</option>
+              <option value="off">Nothing</option>
+            </select></label>
+            <p class="hint">Alerts about a pinned ship are always high priority. Browser notifications need your permission the first time.</p>
+          </div>
+        </details>
+        <ul id="alerts" class="alerts" aria-live="polite"></ul>
+      </section>
+    </aside>
+  </main>
+
+  <main id="reports" class="reports" hidden>
+    <section class="card" aria-labelledby="h-compare">
+      <h2 id="h-compare">Median wait: this month vs last month</h2>
+      <p id="compare-note" class="hint"></p>
+      <div id="compare" class="table-wrap"></div>
+    </section>
+    <section class="card" aria-labelledby="h-daily">
+      <div class="card-head">
+        <h2 id="h-daily">Per port and day</h2>
+        <label>Last <select id="r-days" aria-label="Days to show">
+          <option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option>
+        </select></label>
+      </div>
+      <div id="trends" class="trends"></div>
+      <div id="daily" class="table-wrap"></div>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="/static/sky.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

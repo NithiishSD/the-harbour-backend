@@ -45,9 +45,7 @@ from storage.warehouse import reports
 
 log = get_logger("dashboard")
 
-# In production Nginx serves frontend/src/ directly (see infra/docker-compose.yml).
-# For local dev, FastAPI falls back to mounting it itself.
-STATIC = Path(os.environ.get("STATIC_DIR", str(Path(__file__).parents[2] / "frontend" / "src")))
+STATIC = Path(os.environ.get("STATIC_DIR", str(Path(__file__).parent / "static")))
 MmsiPath = Annotated[str, PathParam(pattern=r"^\d{9}$")]
 MmsiList = Annotated[str, Query(pattern=r"^(\d{9}(,\d{9}){0,199})?$")]  # up to 200 comma-separated MMSIs
 MAP_LIMIT = 2000  # default size cap of the map
