@@ -1,0 +1,4 @@
+port_id,name,country,lat,lon,node
+SGSIN,Singapore,SG,1.2640,103.8400,SIN_W
+USLAX,Los Angeles,US,33.7290,-118.2620,LA
+USLGB,Long Beach,US,33.7540,-118.2160,LA

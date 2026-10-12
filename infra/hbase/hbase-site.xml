@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>hbase.cluster.distributed</name><value>false</value></property>
+  <property><name>hbase.rootdir</name><value>file:///data/hbase</value></property>
+  <property><name>hbase.zookeeper.property.dataDir</name><value>/data/zookeeper</value></property>
+  <property><name>hbase.unsafe.stream.capability.enforce</name><value>false</value></property>
+  <property><name>hbase.master.info.port</name><value>16010</value></property>
+  <property><name>hbase.rest.port</name><value>8080</value></property>
+  <!-- A laptop under memory pressure can stall for tens of seconds; with the 90 s default the master
+       aborts when its ZooKeeper session expires. Allow sessions up to 120 s (max = 20 x tickTime). -->
+  <property><name>zookeeper.session.timeout</name><value>120000</value></property>
+  <property><name>hbase.zookeeper.property.tickTime</name><value>6000</value></property>
+</configuration>

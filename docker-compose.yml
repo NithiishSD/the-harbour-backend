@@ -1,0 +1,199 @@
+name: harbourwatch-backend
+
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    restart: no
+    mem_limit: 768m  # heap 512m + page cache for the log
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: 4L622nShTKiAlbOQuNmqqg
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 4
+      KAFKA_LOG_SEGMENT_BYTES: 67108864
+      KAFKA_JVM_PERFORMANCE_OPTS: "-Xmx512m -Xms512m"
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  hbase:
+    image: nerdamigo/hbase-standalone:2.5.8
+    restart: no
+    mem_limit: 1536m  # heap 1024m + off-heap / REST server
+    environment:
+      HBASE_HEAPSIZE: 1024m
+    volumes:
+      - hbase-data:/data/hbase
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'status' | hbase shell -n 2>&1 | grep -q 'active master'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # ── Application services (built from Dockerfile in current directory) ─────────
+  init:
+    build: .
+    restart: no
+    depends_on:
+      kafka:
+        condition: service_healthy
+      hbase:
+        condition: service_healthy
+    command: ["python", "-m", "storage.hbase.tables", "--create"]
+    environment: &app-env
+      KAFKA_BOOTSTRAP: kafka:19092
+      HBASE_REST_URL: http://hbase:8080
+      DATA_DIR: /app/data
+      AISSTREAM_API_KEY: ${AISSTREAM_API_KEY}
+      LIVE_BBOX: ${LIVE_BBOX:-}
+      DARK_TIMEOUT_HOURS: ${DARK_TIMEOUT_HOURS:-6}
+      MIN_ACTIVE_SHIPS: ${MIN_ACTIVE_SHIPS:-3}
+      QUEUE_GROWTH_PCT: ${QUEUE_GROWTH_PCT:-50}
+      QUEUE_GROWTH_MIN: ${QUEUE_GROWTH_MIN:-5}
+      MONITOR_COUNTRY: ${MONITOR_COUNTRY:-SG}
+      MONITOR_PORTS: ${MONITOR_PORTS:-}
+      MONITOR_PARTNERS: ${MONITOR_PARTNERS:-auto}
+      MONITOR_WATERS: ${MONITOR_WATERS:-}
+      MONITOR_REGION_KM: ${MONITOR_REGION_KM:-150}
+      MONITOR_MAX_PARTNERS: ${MONITOR_MAX_PARTNERS:-20}
+      MONITOR_MIN_PARTNERS: ${MONITOR_MIN_PARTNERS:-5}
+      MONITOR_AIS_PAD: ${MONITOR_AIS_PAD:-2}
+      MONITOR_AIS_REGION_KM: ${MONITOR_AIS_REGION_KM:-800}
+      MONITOR_AIS_SOURCE_KM: ${MONITOR_AIS_SOURCE_KM:-500}
+      MONITOR_FOLLOWABLE_HOURS: ${MONITOR_FOLLOWABLE_HOURS:-48}
+      MONITOR_SOURCE_PORT_KM: ${MONITOR_SOURCE_PORT_KM:-60}
+      MONITOR_STOP_KM: ${MONITOR_STOP_KM:-15}
+      MONITOR_LEFT_KM: ${MONITOR_LEFT_KM:-30}
+      MONITOR_SLOW_KN: ${MONITOR_SLOW_KN:-1.5}
+      MAP_TRANSIT_HOURS: ${MAP_TRANSIT_HOURS:-6}
+      MAP_ARRIVED_HOURS: ${MAP_ARRIVED_HOURS:-24}
+      MAP_SILENT_HOURS: ${MAP_SILENT_HOURS:-24}
+      LIVE_SINCE: ${LIVE_SINCE:-2026-10-10}
+      HISTORY_MAX_MB: ${HISTORY_MAX_MB:-1024}
+      COLD_MAX_MB: ${COLD_MAX_MB:-2048}
+      FOLLOW_MAX: ${FOLLOW_MAX:-200}
+      FOLLOW_DAYS: ${FOLLOW_DAYS:-30}
+      FOLLOW_REFRESH_S: ${FOLLOW_REFRESH_S:-300}
+      SHIPS_CACHE_S: ${SHIPS_CACHE_S:-2}
+      HISTORY_EVERY_S: ${HISTORY_EVERY_S:-600}
+      MONITOR_TIMEZONE: ${MONITOR_TIMEZONE:-}
+    volumes: &app-volumes
+      - ./data:/app/data
+    mem_limit: 512m
+
+  streaming:
+    build: .
+    restart: no
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "streaming.job", "--starting-offsets", "latest"]
+    environment:
+      <<: *app-env
+      SPARK_MASTER: ${STREAM_SPARK_MASTER:-local[2]}
+      SPARK_DRIVER_MEMORY: ${STREAM_DRIVER_MEMORY:-1g}
+      SPARK_UI: ${STREAM_SPARK_UI:-0}
+    volumes: *app-volumes
+    mem_limit: ${STREAM_MEM_LIMIT:-3g}
+    cpus: ${STREAM_CPUS:-2}
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  history:
+    build: .
+    restart: no
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "batch.archive_history", "--every"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 512m
+    cpus: 1
+
+  weather:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.weather"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 192m
+
+  # ── Optional profiles ────────────────────────────────────────────────────────
+  replay:
+    build: .
+    profiles: [demo]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.replay", "--speed", "60"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 256m
+
+  live:
+    build: .
+    profiles: [live]
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.aisstream"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 192m
+
+  follow:
+    build: .
+    profiles: [live]
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.follow"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 256m
+
+  nightly:
+    build: .
+    profiles: [batch]
+    depends_on: {}
+    command: ["python", "-m", "batch.nightly", "--date", "${NIGHTLY_DATE:-2026-10-10}", "--live"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 3g
+
+volumes:
+  kafka-data:
+  hbase-data:

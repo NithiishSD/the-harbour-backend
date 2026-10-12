@@ -1,0 +1,57 @@
+[project]
+name = "harbourwatch"
+version = "0.1.0"
+description = "Real-time port congestion and dark-ship monitoring on AIS data"
+requires-python = ">=3.12"
+dependencies = [
+    "pyspark[sql]==4.2.0",
+    "pandas==2.3.3",
+    "confluent-kafka==2.16.0",
+    "websockets==17.2",
+    "duckdb==1.5.6",
+    "fastapi==0.142.2",
+    "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.10",
+    "mypy==2.4.0",
+    "httpx==0.28.1",
+    "playwright==1.63.0",
+    "pip-audit==2.10.1",
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S"]
+"measure/**" = ["S311"]
+
+[tool.mypy]
+files = ["common", "ingest", "streaming", "batch", "storage", "dashboard", "measure"]
+python_version = "3.14"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "integration: needs Kafka and HBase from docker compose",
+    "e2e: browser tests against a running dashboard",
+    "slow: long-running tests",
+]
+addopts = "-ra"

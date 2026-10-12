@@ -1,0 +1,191 @@
+name: harbourwatch-ref
+
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    restart: no
+    mem_limit: 768m  # heap 512m + page cache for the log
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
+    ports:
+      - "127.0.0.1:9092:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      start_period: 20s
+      retries: 10
+
+  hbase:
+    build: ./hbase
+    image: harbourwatch-hbase:2.6.7
+    restart: no
+    mem_limit: 1536m  # heap 1g (master + REST gateway in one container)
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:16010:16010"
+    volumes:
+      - hbase-data:/data
+
+  # ── Frontend — Nginx serving frontend/src static files ──────────────────────
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    image: harbourwatch-frontend
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:80:80"
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # ── Application services (built from backend/Dockerfile) ────────────────────
+  init:
+    &app
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: harbourwatch-backend
+    env_file:
+      - path: ../.env   # API key, LIVE_BBOX, thresholds; addresses below win over localhost values
+        required: false
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      HBASE_REST_URL: http://hbase:8080
+      DATA_DIR: /app/data
+    volumes:
+      - ../data:/app/data
+    depends_on:
+      kafka:
+        condition: service_healthy
+      hbase:
+        condition: service_healthy
+    command: ["sh", "-c", "python -m common.topics && python -m storage.hbase.tables"]
+
+  streaming:
+    <<: *app
+    restart: no
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:4040:4040"
+    volumes:
+      - ../data:/app/data
+      - ../data/checkpoints-live/state:/app/data/checkpoints/state
+      - ../data/checkpoints-live/queue:/app/data/checkpoints/queue
+    command: ["python", "-m", "streaming.job", "--starting-offsets", "latest"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      HBASE_REST_URL: http://hbase:8080
+      DATA_DIR: /app/data
+      SPARK_MASTER: ${STREAM_SPARK_MASTER:-local[2]}
+      SPARK_DRIVER_MEMORY: ${STREAM_DRIVER_MEMORY:-1g}
+      SPARK_UI: ${STREAM_SPARK_UI:-0}
+    mem_limit: ${STREAM_MEM_LIMIT:-3g}
+    cpus: ${STREAM_CPUS:-2}
+
+  dashboard:
+    <<: *app
+    restart: no
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    # Port 8000 is internal-only; Nginx (frontend service) proxies /api to here.
+    # Expose directly on localhost only for local dev / smoke tests.
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    mem_limit: 512m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Archive live feed → offline replay history, every HISTORY_EVERY_S seconds
+  history:
+    <<: *app
+    restart: no
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "batch.archive_history", "--every"]
+    mem_limit: 512m
+    cpus: 1
+
+  weather:
+    <<: *app
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.weather"]
+    mem_limit: 192m
+
+  # ── Optional profiles ────────────────────────────────────────────────────────
+  replay:
+    <<: *app
+    profiles: [demo]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.replay", "--noaa", "data/noaa/csv/AIS_2023_01_01_bbox.csv", "--speed", "60"]
+    mem_limit: 256m
+
+  live:
+    <<: *app
+    profiles: [live]
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.aisstream"]
+    mem_limit: 192m
+
+  follow:
+    <<: *app
+    profiles: [live]
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.follow"]
+    mem_limit: 256m
+
+  nightly:
+    <<: *app
+    profiles: [batch]
+    depends_on: {}
+    # Singapore mode: --live skips the NOAA download, uses live-feed archive.
+    # US mode: remove --live and set MONITOR_COUNTRY=US in .env.
+    command: ["python", "-m", "batch.nightly", "--date", "${NIGHTLY_DATE:-2026-10-10}", "--live"]
+    mem_limit: 3g
+
+volumes:
+  kafka-data:
+  hbase-data:
