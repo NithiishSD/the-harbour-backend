@@ -19,7 +19,7 @@ Monitors real-time ship movements, tracks port queues and waiting times, detects
    cp .env.example .env
    ```
 
-2. Start the core backend services (Kafka, HBase, schema init, streaming engine, API, and weather):
+2. Start the backend and frontend services (Kafka, HBase, schema init, streaming engine, API, weather, and Nginx):
    ```bash
    docker compose up -d --build
    ```
@@ -29,10 +29,14 @@ Monitors real-time ship movements, tracks port queues and waiting times, detects
    docker compose --profile live up -d
    ```
 
-4. Verify backend health:
+4. Verify backend and frontend health:
    ```bash
    curl http://127.0.0.1:8000/health
+   curl http://127.0.0.1/health
    ```
+
+   The frontend is available at http://127.0.0.1. Its health request is
+   proxied through Nginx to the backend.
 
 ## Local Development
 

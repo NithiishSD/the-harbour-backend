@@ -8,37 +8,43 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
       CLUSTER_ID: 4L622nShTKiAlbOQuNmqqg
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: 4
       KAFKA_LOG_SEGMENT_BYTES: 67108864
-      KAFKA_JVM_PERFORMANCE_OPTS: "-Xmx512m -Xms512m"
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+    ports:
+      - "127.0.0.1:9092:9092"
     volumes:
-      - kafka-data:/tmp/kraft-combined-logs
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --list >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
       interval: 10s
-      timeout: 5s
-      retries: 6
+      timeout: 10s
+      start_period: 20s
+      retries: 10
 
   hbase:
-    image: nerdamigo/hbase-standalone:2.5.8
+    build: ./infra/hbase
+    image: harbourwatch-hbase:2.6.7
     restart: no
-    mem_limit: 1536m  # heap 1024m + off-heap / REST server
-    environment:
-      HBASE_HEAPSIZE: 1024m
+    mem_limit: 1536m  # heap 1g (master + REST gateway in one container)
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:16010:16010"
     volumes:
-      - hbase-data:/data/hbase
-    healthcheck:
-      test: ["CMD-SHELL", "echo 'status' | hbase shell -n 2>&1 | grep -q 'active master'"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
+      - hbase-data:/data
 
   # ── Application services (built from Dockerfile in current directory) ─────────
   init:
@@ -49,7 +55,7 @@ services:
         condition: service_healthy
       hbase:
         condition: service_healthy
-    command: ["python", "-m", "storage.hbase.tables", "--create"]
+    command: ["sh", "-c", "python -m common.topics && python -m storage.hbase.tables"]
     environment: &app-env
       KAFKA_BOOTSTRAP: kafka:19092
       HBASE_REST_URL: http://hbase:8080
@@ -91,6 +97,24 @@ services:
       - ./data:/app/data
     mem_limit: 512m
 
+  frontend:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:80:80"
+    volumes:
+      - ../frontend/src:/usr/share/nginx/html:ro
+      - ./infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   streaming:
     build: .
     restart: no
@@ -125,7 +149,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-
   history:
     build: .
     restart: no
