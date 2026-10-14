@@ -4,7 +4,13 @@ on:
   push:
     branches: ["**"]
     tags: ["v*.*.*"]
+    # Don't rebuild the app image just because the HBase Dockerfile changed.
+    # build-hbase.yml handles that separately.
+    paths-ignore:
+      - "infra/hbase/**"
   pull_request:
+    paths-ignore:
+      - "infra/hbase/**"
 
 concurrency:
   group: backend-ci-${{ github.ref }}

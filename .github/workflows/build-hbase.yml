@@ -7,11 +7,14 @@ name: build-hbase
 
 on:
   push:
+    # Only rebuild when the HBase source actually changes.
+    # Tags are intentionally excluded: the image version is pinned inside
+    # infra/hbase/Dockerfile via ARG HBASE_VERSION, not by the git tag.
+    # Use workflow_dispatch for a manual first-time publish.
     branches: ["main"]
     paths:
       - "infra/hbase/**"
-    tags: ["v*.*.*"]
-  workflow_dispatch:   # allow a manual publish (e.g. first-time setup)
+  workflow_dispatch:   # manual publish (e.g. first-time setup, or forced rebuild)
 
 concurrency:
   group: build-hbase-${{ github.ref }}
