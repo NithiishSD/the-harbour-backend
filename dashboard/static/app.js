@@ -122,9 +122,17 @@ const app = {
   dark: new Set(),
 };
 
+const API_BASE = (window.__API_BASE__ || localStorage.getItem('api_base') || (new URLSearchParams(window.location.search).get('api') || '')).replace(/\/$/, '');
+if (new URLSearchParams(window.location.search).has('api')) {
+  localStorage.setItem('api_base', API_BASE);
+}
+function apiUrl(path) {
+  return API_BASE ? `${API_BASE}${path}` : path;
+}
+
 async function api(path, { method = 'GET', body: sent = null } = {}) {
   const headers = { Accept: 'application/json', ...(sent ? { 'Content-Type': 'application/json' } : {}) };
-  const r = await fetch(path, { method, headers, body: sent ? JSON.stringify(sent) : undefined, signal: AbortSignal.timeout(8000) });
+  const r = await fetch(apiUrl(path), { method, headers, body: sent ? JSON.stringify(sent) : undefined, signal: AbortSignal.timeout(8000) });
   let body = null;
   try { body = await r.json(); } catch { /* not JSON */ }
   if (!r.ok) throw Object.assign(new Error(body?.error?.message || `HTTP ${r.status}`), { code: body?.error?.code });
@@ -489,6 +497,73 @@ function banner(text) {
   $('banner').hidden = !text;
   $('banner-text').textContent = text || '';
 }
+
+function formatUserMessage(err, fallback = 'Service is temporarily unavailable') {
+  if (!err) return fallback;
+  const msg = typeof err === 'string' ? err : (err.message || '');
+  if (!msg) return fallback;
+  if (/run:|python\s+-m|docker|curl|npm|bash|sh\s+-c|pip|apt-get/i.test(msg)) {
+    return fallback;
+  }
+  if (/^HTTP\s*\d{3}/i.test(msg) || /status\s*(code)?\s*\d{3}/i.test(msg)) {
+    return fallback;
+  }
+  if (/hbase|kafka|duckdb|sql|database|traceback|connection refused|timeout|failed to fetch|networkerror/i.test(msg)) {
+    return fallback;
+  }
+  if (/^internal\s+error$/i.test(msg) || /store is unavailable/i.test(msg) || /_UNAVAILABLE|_ERROR/i.test(msg)) {
+    return fallback;
+  }
+  return msg;
+}
+
+function showToast({ title, message, type = 'info', duration = 8000, onClick = null }) {
+  const toasts = $('toasts');
+  if (!toasts) return null;
+  const p = type === 'high' || type === 'error' ? 'high' : type === 'medium' || type === 'warning' ? 'medium' : type;
+  const toast = h('div', { class: `toast ${p}`, role: 'status' });
+  if (onClick) {
+    toast.style.cursor = 'pointer';
+    toast.addEventListener('click', (e) => {
+      if (e.target.closest('.toast-close')) return;
+      onClick(e);
+      toast.remove();
+    });
+  }
+  const head = h('div', { class: 'toast-head' },
+    h('b', {}, title),
+    h('button', { type: 'button', class: 'toast-close', 'aria-label': 'Close notification', onclick: (e) => { e.stopPropagation(); toast.remove(); } }, '✕'),
+  );
+  toast.append(head, h('div', { class: 'toast-body' }, message));
+  toasts.append(toast);
+  if (duration > 0) setTimeout(() => toast.remove(), duration);
+  return toast;
+}
+
+function showModal({ title, content, actions = [] }) {
+  const dlg = $('modal');
+  if (!dlg) return;
+  $('modal-title').textContent = title || 'Notice';
+  const body = $('modal-body');
+  if (typeof content === 'string') {
+    body.textContent = content;
+  } else if (content instanceof HTMLElement) {
+    body.replaceChildren(content);
+  }
+  const actWrap = $('modal-actions');
+  actWrap.replaceChildren(...(actions.length ? actions.map(({ label, cls = 'btn', onClick }) => {
+    const btn = h('button', { type: 'button', class: cls }, label);
+    btn.onclick = () => { if (onClick) onClick(); dlg.close(); };
+    return btn;
+  }) : [h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, 'Dismiss')]));
+  $('modal-close').onclick = () => dlg.close();
+  if (typeof dlg.showModal === 'function') {
+    try { dlg.showModal(); } catch { dlg.setAttribute('open', ''); }
+  } else {
+    dlg.setAttribute('open', '');
+  }
+}
+
 async function loadShips() {
   try {
     const pins = [...app.pins].slice(0, 200).join(',');
@@ -499,7 +574,7 @@ async function loadShips() {
     mapStatus(app.ships.size ? '' : 'No ships reported yet');
     if (app.selected) refreshSelected();
   } catch (err) {
-    banner(`Live data unavailable: ${err.message}. Retrying…`);
+    banner('Live data unavailable. Retrying…');
     if (!app.ships.size) mapStatus('Live data unavailable');
   }
 }
@@ -527,7 +602,7 @@ function renderClock() {
 async function loadHealth() {
   const el = $('health');
   try {
-    const r = await fetch('/health', { signal: AbortSignal.timeout(8000) });
+    const r = await fetch(apiUrl('/health'), { signal: AbortSignal.timeout(8000) });
     const body = await r.json();
     el.dataset.status = body.status === 'ok' ? 'ok' : 'degraded';
     el.textContent = Object.entries(body.checks).map(([k, v]) => `${k} ${v}`).join(' · ');
@@ -677,7 +752,7 @@ function renderDetail(track, states, route) {
   const dec = r?.declared; // what the crew typed: may name a port we do not cover, or no destination yet
   const typedNote = dec?.text && !dec.orders && dec.port_id !== dest?.port_id ? `crew typed “${dec.text}”` : dec?.orders ? 'waiting for orders' : '';
   let destText;
-  if (route.status === 'rejected') destText = h('span', { class: 'err' }, route.reason.message);
+  if (route.status === 'rejected') destText = h('span', { class: 'err' }, 'Route calculation unavailable');
   else if (dest) destText = [`${dest.name} (${dest.port_id})`, r.distance_nm == null ? '' : `${Math.round(r.distance_nm)} nm`, dest.basis === 'declared' || dest.basis === 'arrival' ? '' : 'inferred', typedNote].filter(Boolean).join(' · ');
   else destText = typedNote || 'not known';
   // Source: the port, else the place it was first heard (with coordinates), else the coordinates, else not known.
@@ -702,7 +777,7 @@ function renderDetail(track, states, route) {
   })[role]).filter(Boolean).join(', ');
   const pinned = app.pins.has(s.mmsi);
   const statesBox = states.status === 'rejected'
-    ? h('p', { class: 'err' }, states.reason.message)
+    ? h('p', { class: 'err' }, 'State transition history unavailable')
     : states.value.length
       ? h('ul', { class: 'hist' }, states.value.map((st) => h('li', { class: st.future ? 'future' : null, title: st.seek ? 'Go to this time' : null, onclick: st.seek ? () => seekTo(st.seek) : null },
         h('span', {}, st.state), h('span', {}, st.port || '—'),
@@ -768,7 +843,7 @@ async function runSearch(text) {
       h('span', { class: `where ${hit.on_map ? 'on' : 'past'}` }, hit.on_map ? 'on map' : 'history')))));
   } catch (err) {
     box.hidden = false;
-    box.replaceChildren(h('li', { class: 'err' }, `Search unavailable: ${err.message}`));
+    box.replaceChildren(h('li', { class: 'err' }, 'Search service is temporarily unavailable. Please try again.'));
   }
 }
 async function openShip(hit) {
@@ -878,7 +953,7 @@ async function loadPorts() {
     for (const p of app.ports) portLayer.addLayer(portMarker(p));
     drawStorms();
   } catch (err) {
-    $('ports').replaceChildren(h('p', { class: 'err' }, `Ports unavailable: ${err.message}`));
+    $('ports').replaceChildren(h('p', { class: 'err' }, 'Port queue data is temporarily unavailable.'));
   }
 }
 const portMarkers = new Map();
@@ -979,7 +1054,7 @@ async function saveSelection() {
   try {
     applyMonitor(await api('/api/monitor/selection', { method: 'PUT', body: { ports: m.ports, partners: m.partners } }));
   } catch (err) {
-    banner(`Could not save the choice: ${err.message}`);
+    banner('Unable to save port selection. Please check your connection and try again.');
     return;
   }
   // the other ports' markers and cards go, the chosen ones come
@@ -1213,9 +1288,13 @@ function announce(a) {
   const level = app.notify;
   if (level === 'off' || (level === 'high' && p !== 'high')) return;
   const title = `${p === 'high' ? 'High' : 'Medium'} priority: ${ALERT_TYPES[a.type] || a.type}`;
-  const toast = h('div', { class: `toast ${p}`, role: 'status', onclick: () => { locate(a); toast.remove(); } }, h('b', {}, title), h('div', {}, alertText(a)));
-  $('toasts').append(toast);
-  setTimeout(() => toast.remove(), 9000);
+  showToast({
+    title,
+    message: alertText(a),
+    type: p,
+    duration: 9000,
+    onClick: () => locate(a),
+  });
   if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
     const n = new Notification(title, { body: alertText(a), tag: a.alert_id });
     n.onclick = () => { window.focus(); locate(a); };
@@ -1228,13 +1307,13 @@ async function loadAlerts() {
     for (const m of app.markers.values()) restyle(m.ship.mmsi);
     renderAlerts(); renderSummary();
   } catch (err) {
-    $('alerts').replaceChildren(h('li', { class: 'err' }, `Alerts unavailable: ${err.message}`));
+    $('alerts').replaceChildren(h('li', { class: 'err' }, 'Alert feed is temporarily unavailable.'));
   }
 }
 let streamWasDown = false;
 function connectStream() {
   const status = $('stream');
-  const es = new EventSource('/api/alerts/stream');
+  const es = new EventSource(apiUrl('/api/alerts/stream'));
   app.stream = es;
   es.onopen = () => {
     status.dataset.status = 'open'; status.textContent = 'Live';
@@ -1396,7 +1475,7 @@ async function loadReports() {
       daily.slice().reverse().map((r) => [r.date, portName(r.port_id), String(r.calls), num(r.median_wait_hours),
         num(r.avg_turnaround_hours), String(r.max_hourly_queue)])));
   } catch (err) {
-    $('compare').replaceChildren(h('p', { class: 'err' }, `Reports unavailable: ${err.message}`));
+    $('compare').replaceChildren(h('p', { class: 'err' }, 'Performance reports are temporarily unavailable.'));
     $('trends').replaceChildren(); $('daily').replaceChildren();
   }
 }
@@ -1489,11 +1568,11 @@ async function loadReplayDates() {
     app.replay.dates = await api('/api/history/dates');
   } catch (err) {
     app.replay.dates = [];
-    banner(`History unavailable: ${err.message}`);
+    banner('Historical replay data is currently unavailable.');
   }
   if (!app.replay.dates.length) {
     sel.replaceChildren(h('option', { value: '' }, 'no history'));
-    mapStatus('No history yet. Run: python -m batch.backfill_rdd (NOAA) or python -m batch.archive_history (aisstream)');
+    mapStatus('No historical data available for replay yet.');
     return;
   }
   sel.replaceChildren(...app.replay.dates.map(dayOption));
@@ -1533,10 +1612,10 @@ async function loadSnapshot() {
     if (err.code === 'NOT_MONITORED') { // the feed did not cover this country then: an empty sea would mislead
       updateShips([]);
       banner('');
-      mapStatus(err.message);
+      mapStatus('No tracking data available for the monitored region at this time.');
       return;
     }
-    banner(`History unavailable: ${err.message}`);
+    banner('Historical vessel positions are currently unavailable.');
   }
 }
 function setPlaying(on) {
@@ -1660,7 +1739,7 @@ async function startFocus(mmsi) {
   try {
     data = await api(`/api/history/ships/${mmsi}/journey?full=true`);
   } catch (err) {
-    banner(`No history for this ship: ${err.message}`);
+    banner('Voyage history for this vessel is currently unavailable.');
     return;
   }
   app.replay.journey = { mmsi, data, plan: null };

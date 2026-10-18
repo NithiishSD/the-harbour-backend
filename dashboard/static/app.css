@@ -143,9 +143,38 @@ input[type="search"], select { background: var(--bg); border: 1px solid var(--li
 .alert .meta { font: 11px var(--mono); color: var(--muted); grid-column: 1 / -1; }
 .alert .text { overflow-wrap: anywhere; }
 
-.toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 2000; max-width: min(360px, calc(100vw - 32px)); }
-.toast { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--high); border-radius: 6px; padding: 10px 12px; box-shadow: 0 4px 16px #0004; cursor: pointer; }
-.toast.medium { border-left-color: var(--medium); }
+.toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 2000; max-width: min(360px, calc(100vw - 32px)); pointer-events: none; }
+.toast { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--high); border-radius: 6px; padding: 10px 12px; box-shadow: 0 4px 16px #0004; cursor: pointer; pointer-events: auto; display: grid; gap: 4px; transition: opacity 0.2s, transform 0.2s; }
+.toast.high, .toast.error { border-left-color: var(--high); }
+.toast.medium, .toast.warning { border-left-color: var(--medium); }
+.toast.info { border-left-color: var(--underway); }
+.toast.success { border-left-color: var(--berthed); }
+.toast-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.toast-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1; border-radius: 4px; }
+.toast-close:hover { color: var(--text); background: var(--panel-hover); }
+.toast-body { font-size: 13px; color: var(--text); line-height: 1.4; word-break: break-word; }
+
+dialog.modal {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0;
+  max-width: min(460px, calc(100vw - 32px));
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.7);
+  z-index: 3000;
+}
+dialog.modal::backdrop {
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+}
+.modal-card { padding: 18px 20px; display: grid; gap: 14px; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.modal-head h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; padding: 2px 6px; line-height: 1; border-radius: 4px; }
+.modal-close:hover { color: var(--text); background: var(--panel-hover); }
+.modal-body { font-size: 14px; color: var(--text); line-height: 1.5; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* ship markers: a ship seen from above, pointing along the heading (--rot); the size comes from the markup (true size at the zoom) */
 .ship-icon { background: none; border: 0; } /* Leaflet positions the marker element (absolute): do not override it */
