@@ -107,6 +107,36 @@ def test_a_timestamp_far_in_the_future_is_rejected():
         parse_time("2238-09-03 19:57:00 +0000 UTC")
 
 
+def test_live_positions_more_than_10_minutes_ahead_are_rejected():
+    # Live envelope with time_utc 15 minutes ahead of received_at processing time
+    msg = aisstream_position()
+    msg["MetaData"]["time_utc"] = "2026-10-17 12:15:00.000000 +0000 UTC"
+    env = envelope(msg, source="aisstream")
+    env["received_at"] = "2026-10-17T12:00:00Z"
+    result = normalize(env)
+    assert result.reject is not None and "future" in result.reject
+
+    # Live envelope within 5 minutes of received_at processing time is accepted
+    msg2 = aisstream_position()
+    msg2["MetaData"]["time_utc"] = "2026-10-17 12:05:00.000000 +0000 UTC"
+    env2 = envelope(msg2, source="aisstream")
+    env2["received_at"] = "2026-10-17T12:00:00Z"
+    result2 = normalize(env2)
+    assert result2.reject is None
+    assert result2.position is not None
+
+
+def test_replay_positions_exempt_from_10_minute_guard():
+    # Historical NOAA replay is from 2023, far in the past relative to wall-clock now, but accepted
+    row = noaa_row()
+    row["BaseDateTime"] = "2023-01-01T09:00:00"
+    env = envelope(row, source="noaa")
+    result = normalize(env)
+    assert result.reject is None
+    assert result.position is not None
+
+
+
 @pytest.mark.parametrize(
     ("code", "expected"),
     [(30, "fishing"), (52, "tug"), (65, "passenger"), (70, "cargo"), (89, "tanker"), (0, "unknown"),

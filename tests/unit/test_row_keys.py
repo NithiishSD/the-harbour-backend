@@ -1,6 +1,13 @@
 import pytest
 
-from storage.hbase.tables import port_call_key, port_queue_key, rev, track_key, unrev
+from storage.hbase.tables import (
+    area_activity_key,
+    port_call_key,
+    port_queue_key,
+    rev,
+    track_key,
+    unrev,
+)
 
 
 def test_reversed_timestamp_sorts_newest_first():
@@ -34,6 +41,14 @@ def test_port_keys():
     assert port_queue_key("SGSIN", 20) < port_queue_key("SGSIN", 10)
     with pytest.raises(ValueError):
         port_queue_key("LA", 1)
+
+
+def test_area_activity_key():
+    key = area_activity_key("uslax", 5000, "419000123")
+    assert key.startswith("USLAX")
+    assert len(key) == 5 + 19 + 9
+    assert key.endswith("419000123")
+    assert area_activity_key("USLAX", 6000, "419000123") < area_activity_key("USLAX", 5000, "419000123")
 
 
 def test_negative_timestamp_rejected():

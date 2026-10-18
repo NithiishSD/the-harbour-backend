@@ -6,6 +6,7 @@
 Queries
   normalize  ais.raw -> parse, validate, de-duplicate -> ais.positions / ais.static
   rejects    ais.raw -> invalid messages with their reason -> data/rejects (Parquet)
+  dlq        ais.raw -> invalid messages -> ais.dlq (Kafka Dead-Letter Queue)
   archive    ais.raw + weather.marine -> data/cold (Parquet by topic and date)
   track      ais.positions -> HBase vessel_track
   static     ais.static -> HBase vessel_state info family (latest details per ship)
@@ -214,6 +215,30 @@ def q_rejects(spark: SparkSession, cfg: JobConfig) -> StreamingQuery:
     return _start(writer, cfg, "rejects", trigger_seconds=30)
 
 
+def q_dlq(spark: SparkSession, cfg: JobConfig) -> StreamingQuery:
+    """Stream malformed/rejected messages to the Kafka Dead-Letter Queue (ais.dlq)."""
+    rejects = (
+        normalized(spark, cfg)
+        .filter(F.col("kind") == "reject")
+        .select(
+            F.coalesce(F.col("reason"), F.lit("unknown")).alias("key"),
+            F.to_json(
+                F.struct(
+                    F.col("reason"),
+                    F.col("raw"),
+                    F.col("kafka_ts"),
+                )
+            ).alias("value"),
+        )
+    )
+    writer = (
+        rejects.writeStream.format("kafka")
+        .option("kafka.bootstrap.servers", settings().kafka_bootstrap)
+        .option("topic", topics.DLQ)
+    )
+    return _start(writer, cfg, "dlq", trigger_seconds=30)
+
+
 def q_archive(spark: SparkSession, cfg: JobConfig) -> StreamingQuery:
     both = topics.RAW + "," + topics.WEATHER
     stream = (
@@ -386,6 +411,7 @@ def q_queue(spark: SparkSession, cfg: JobConfig) -> StreamingQuery:
 QUERIES = {
     "normalize": q_normalize,
     "rejects": q_rejects,
+    "dlq": q_dlq,
     "archive": q_archive,
     "track": q_track,
     "static": q_static,

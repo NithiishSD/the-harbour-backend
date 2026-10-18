@@ -108,13 +108,34 @@ def load_zones(extra: list[Path] | None = None, learned: bool = True) -> list[Zo
     return sorted(zones, key=lambda z: KIND_PRIORITY[z.kind])
 
 
+GRID_SIZE_DEG = 0.5  # ~55km spatial bin for O(1) containment pre-filtering
+
+
 class ZoneIndex:
     def __init__(self, zones: list[Zone]) -> None:
         self.zones = sorted(zones, key=lambda z: KIND_PRIORITY[z.kind])
+        self._learned_mtime: float | None = None
+        self._build_grid()
+
+    def _build_grid(self) -> None:
+        self._grid: dict[tuple[int, int], list[Zone]] = {}
+        for z in self.zones:
+            min_lon, min_lat, max_lon, max_lat = z.bbox
+            lat_start = int(math.floor(min_lat / GRID_SIZE_DEG))
+            lat_end = int(math.floor(max_lat / GRID_SIZE_DEG))
+            lon_start = int(math.floor(min_lon / GRID_SIZE_DEG))
+            lon_end = int(math.floor(max_lon / GRID_SIZE_DEG))
+            for b_lat in range(lat_start, lat_end + 1):
+                for b_lon in range(lon_start, lon_end + 1):
+                    self._grid.setdefault((b_lat, b_lon), []).append(z)
 
     def lookup(self, lat: float, lon: float) -> Zone | None:
         """Most specific zone containing the point, or None."""
-        for z in self.zones:
+        bin_key = (int(math.floor(lat / GRID_SIZE_DEG)), int(math.floor(lon / GRID_SIZE_DEG)))
+        candidates = self._grid.get(bin_key)
+        if not candidates:
+            return None
+        for z in candidates:
             min_lon, min_lat, max_lon, max_lat = z.bbox
             if min_lon <= lon <= max_lon and min_lat <= lat <= max_lat and point_in_ring(lon, lat, z.ring):
                 return z
@@ -122,10 +143,28 @@ class ZoneIndex:
 
     def area_of(self, lat: float, lon: float) -> str | None:
         """Port whose wider area contains the point (used for 'other ships in the same area')."""
-        for z in self.zones:
+        bin_key = (int(math.floor(lat / GRID_SIZE_DEG)), int(math.floor(lon / GRID_SIZE_DEG)))
+        candidates = self._grid.get(bin_key)
+        if not candidates:
+            return None
+        for z in candidates:
             if z.kind == "area" and point_in_ring(lon, lat, z.ring):
                 return z.port_id
         return None
+
+    def refresh_learned(self, data_dir: Path | None = None) -> bool:
+        """Dynamically reload learned anchorages if updated by the batch KMeans job."""
+        s = settings()
+        target = (data_dir or s.data_dir) / "geo" / "learned_anchorages.geojson"
+        if not target.is_file():
+            return False
+        current_mtime = target.stat().st_mtime
+        if self._learned_mtime is not None and current_mtime <= self._learned_mtime:
+            return False
+        self._learned_mtime = current_mtime
+        self.zones = load_zones()
+        self._build_grid()
+        return True
 
 
 def circle_ring(lat: float, lon: float, radius_km: float, points: int = 16) -> list[list[float]]:

@@ -1,6 +1,6 @@
 from common import topics
-from storage.hbase.tables import PORT_CALLS, VESSEL_STATE, port_call_key
-from streaming.sinks import event_id, handle_events, state_puts
+from storage.hbase.tables import AREA_ACTIVITY, PORT_CALLS, VESSEL_STATE, port_call_key
+from streaming.sinks import activity_puts, event_id, handle_events, state_puts
 
 H = 3_600_000
 
@@ -14,6 +14,10 @@ class FakeHBase:
         for key, cells, _ in rows:
             self.tables.setdefault(table, {}).setdefault(key, {}).update(cells)
         return len(rows)
+
+    def scan_prefix(self, table, prefix, limit=10000):
+        keys = sorted(k for k in self.tables.get(table, {}) if k.startswith(prefix))[:limit]
+        return [(k, self.tables[table][k]) for k in keys]
 
     def scan_all(self, table, limit=10000):
         return sorted(self.tables.get(table, {}).items())
@@ -91,3 +95,28 @@ def test_port_events_only_for_port_states_and_reappearance():
     assert [v["type"] for t, _, v in out.sent if t == topics.PORT_EVENTS] == ["anchored", "reappeared"]
     assert hb.tables[VESSEL_STATE]["419000001"]["cur:state"] == "anchored"
     assert PORT_CALLS not in hb.tables
+
+
+def test_area_activity_secondary_index_and_puts():
+    hb, out = FakeHBase(), FakeSender()
+    events = [
+        last("419000001", 1000, area="USLGB"),
+        last("419000002", 2000, area="USLGB"),
+        last("419000003", 3000, area="USLAX"),
+    ]
+    act_rows = activity_puts(events)
+    assert len(act_rows) == 3
+    assert act_rows[0][0].startswith("USLGB")
+    assert act_rows[0][1] == {"act:ts": "1000"}
+
+    # Process events and verify AREA_ACTIVITY table is populated
+    handle_events(events, out, hb, 6 * H, 3)
+    assert AREA_ACTIVITY in hb.tables
+    assert len(hb.tables[AREA_ACTIVITY]) == 3
+
+    # Now a dark_candidate in USLGB at ts=5000:
+    # 419000001 and 419000002 were active in USLGB
+    cand = ev("dark_candidate", mmsi="419000099", ts=0, port="USLGB", state="anchored")
+    counts = handle_events([cand], out, hb, 6 * H, 2, now_ms=0)
+    assert counts["alerts"] == 1
+    assert out.sent[-1][2]["details"]["active_ships"] == 2

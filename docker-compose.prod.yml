@@ -24,7 +24,7 @@ services:
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       CLUSTER_ID: 4L622nShTKiAlbOQuNmqqg
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-      KAFKA_LOG_RETENTION_HOURS: 4
+      KAFKA_LOG_RETENTION_HOURS: 168  # 7 days: matches D37 and dashboard alert feed replay
       KAFKA_LOG_SEGMENT_BYTES: 67108864
       KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
     ports:

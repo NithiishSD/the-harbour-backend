@@ -12,6 +12,7 @@ VESSEL_TRACK = "vessel_track"
 VESSEL_STATE = "vessel_state"
 PORT_CALLS = "port_calls"
 PORT_QUEUE = "port_queue"
+AREA_ACTIVITY = "area_activity"
 
 # table -> {column family: versions kept}
 TABLES: dict[str, dict[str, int]] = {
@@ -20,6 +21,7 @@ TABLES: dict[str, dict[str, int]] = {
     VESSEL_STATE: {"cur": 10, "last": 1, "info": 1, "src": 1},
     PORT_CALLS: {"call": 1},
     PORT_QUEUE: {"q": 1},
+    AREA_ACTIVITY: {"act": 1},
 }
 
 
@@ -56,6 +58,11 @@ def port_call_key(port_id: str, arrival_ms: int, mmsi: str) -> str:
 
 def port_queue_key(port_id: str, window_end_ms: int) -> str:
     return _check_port(port_id) + rev(window_end_ms)
+
+
+def area_activity_key(port_id: str, ts_ms: int, mmsi: str) -> str:
+    """Secondary index key: port area + reversed timestamp + MMSI."""
+    return _check_port(port_id) + rev(ts_ms) + _check_mmsi(mmsi)
 
 
 def create_tables(client: HBaseClient | None = None) -> list[str]:

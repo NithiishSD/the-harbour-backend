@@ -12,9 +12,19 @@ WEATHER = "weather.marine"
 WEATHER_GRID = "weather.grid"
 PORT_EVENTS = "port.events"
 ALERTS = "alerts"
+DLQ = "ais.dlq"
 
 # Ship topics are keyed by MMSI, so one ship's messages stay ordered inside one partition.
-PARTITIONS = {RAW: 6, POSITIONS: 6, STATIC: 6, PORT_EVENTS: 6, WEATHER: 1, WEATHER_GRID: 1, ALERTS: 1}
+PARTITIONS = {
+    RAW: 6,
+    POSITIONS: 6,
+    STATIC: 6,
+    PORT_EVENTS: 6,
+    DLQ: 1,
+    WEATHER: 1,
+    WEATHER_GRID: 1,
+    ALERTS: 1,
+}
 RETENTION_MS = 7 * 24 * 3600 * 1000
 
 log = get_logger("topics")

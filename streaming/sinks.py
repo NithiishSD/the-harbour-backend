@@ -12,17 +12,23 @@ from itertools import islice
 from typing import Any
 
 from common import topics
+from common.log import get_logger
 from ingest.replay import Sender
-from storage.hbase.client import HBaseClient, Row
+from storage.hbase.client import HBaseClient, HBaseError, Row
 from storage.hbase.tables import (
+    AREA_ACTIVITY,
     PORT_CALLS,
     PORT_QUEUE,
     VESSEL_STATE,
     VESSEL_TRACK,
+    _check_port,
+    area_activity_key,
     port_call_key,
     port_queue_key,
     track_key,
 )
+
+log = get_logger("streaming.sinks")
 
 CHUNK = 500
 Put = tuple[str, Row, int | None]
@@ -144,7 +150,43 @@ def state_puts(events: list[dict[str, Any]]) -> tuple[list[Put], list[Put]]:
     return state_rows, call_rows
 
 
+def activity_puts(events: list[dict[str, Any]]) -> list[Put]:
+    """area_activity secondary index rows for vessels reporting in monitored port areas."""
+    rows: list[Put] = []
+    for e in events:
+        if e["type"] == "last" and e.get("port_id") and e.get("mmsi") and e.get("ts") is not None:
+            try:
+                key = area_activity_key(e["port_id"], e["ts"], e["mmsi"])
+                rows.append((key, {"act:ts": str(e["ts"])}, e["ts"]))
+            except (ValueError, TypeError):
+                continue
+    return rows
+
+
 def active_ships(client: HBaseClient, area: str, mmsi: str, since_ms: int, until_ms: int) -> int:
+    """Count active vessels in the given port area during (since_ms, until_ms].
+
+    Uses the AREA_ACTIVITY secondary index table (prefix scan by area) when available,
+    falling back to full VESSEL_STATE table scan for backward compatibility with simple test stubs.
+    """
+    if not area:
+        return 0
+    if hasattr(client, "scan_prefix"):
+        try:
+            prefix = _check_port(area)
+            rows = client.scan_prefix(AREA_ACTIVITY, prefix, limit=10_000)
+            if rows:
+                seen_ships: set[str] = set()
+                for key, cells in rows:
+                    if len(key) >= 33:
+                        ship_mmsi = key[-9:]
+                        ts = int(cells.get("act:ts", "0"))
+                        if ship_mmsi != mmsi and since_ms < ts <= until_ms:
+                            seen_ships.add(ship_mmsi)
+                return len(seen_ships)
+        except (HBaseError, KeyError, ValueError, AttributeError) as err:
+            log.debug("area_activity index scan fallback: %s", err)
+
     count = 0
     for key, row in client.scan_all(VESSEL_STATE, limit=100_000):
         if key == mmsi or row.get("last:area") != area:
@@ -165,8 +207,11 @@ def handle_events(
     """Write one batch of state-machine events everywhere they belong. Returns counts per outcome."""
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     state_rows, call_rows = state_puts(events)
+    act_rows = activity_puts(events)
     write_puts(VESSEL_STATE, state_rows, client)  # before the dark check, which reads last:ts
     write_puts(PORT_CALLS, call_rows, client)
+    if act_rows:
+        write_puts(AREA_ACTIVITY, act_rows, client)
     counts = {"state_rows": len(state_rows), "port_calls": len(call_rows), "alerts": 0, "port_events": 0}
     for e in events:
         kind, d = e["type"], e["data"]

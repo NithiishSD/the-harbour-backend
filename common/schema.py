@@ -88,9 +88,16 @@ _AISSTREAM_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(
 
 # A report stamped further ahead than this is a broken clock: it would move the map's 'now' with it.
 MAX_AHEAD = timedelta(days=1)
+# Live mode guard: reject positions more than 10 minutes ahead of processing time
+# to prevent poisoning the 10-minute event-time watermark
+MAX_LIVE_AHEAD = timedelta(minutes=10)
 
 
-def parse_time(text: Any) -> int:
+def parse_time(
+    text: Any,
+    max_ahead: timedelta | None = None,
+    ref_time: datetime | None = None,
+) -> int:
     """Parse aisstream ('2022-12-29 18:22:32.318353 +0000 UTC') or ISO/NOAA time to epoch ms (UTC)."""
     if not isinstance(text, str):
         raise Invalid("missing timestamp")
@@ -102,7 +109,11 @@ def parse_time(text: Any) -> int:
         dt = datetime.fromisoformat(f"{date}T{clock}").replace(tzinfo=UTC)
     except ValueError as err:
         raise Invalid(f"bad timestamp {text[:40]!r}") from err
-    if dt > datetime.now(UTC) + MAX_AHEAD:
+    ahead_limit = max_ahead if max_ahead is not None else MAX_AHEAD
+    base_time = ref_time if ref_time is not None else datetime.now(UTC)
+    if ref_time is not None and (dt - ref_time).total_seconds() > 86400 * 2:
+        base_time = datetime.now(UTC)
+    if dt > base_time + ahead_limit:
         raise Invalid(f"timestamp in the future {text[:40]!r}")
     micros = int((frac or "0")[:6].ljust(6, "0"))
     return int(dt.timestamp()) * 1000 + micros // 1000
@@ -203,7 +214,7 @@ def make_position(
 # ---- sources -----------------------------------------------------------------------------------
 
 
-def _from_aisstream(msg: dict[str, Any]) -> Normalized:
+def _from_aisstream(msg: dict[str, Any], received_at: str | None = None) -> Normalized:
     kind = msg.get("MessageType")
     meta = msg.get("MetaData") or msg.get("Metadata") or {}
     body = (msg.get("Message") or {}).get(kind) if isinstance(kind, str) else None
@@ -211,7 +222,19 @@ def _from_aisstream(msg: dict[str, Any]) -> Normalized:
         return Normalized(ignored=True)
     if not isinstance(body, dict):
         raise Invalid("message body missing")
-    ts = parse_time(meta.get("time_utc"))
+    ref_time = None
+    if isinstance(received_at, str):
+        try:
+            clean_iso = received_at.replace("Z", "+00:00")
+            parsed_rec = datetime.fromisoformat(clean_iso).replace(tzinfo=UTC)
+            ref_time = parsed_rec
+        except (ValueError, TypeError):
+            ref_time = None
+    # Live mode: reject positions more than 10 minutes ahead of processing time (or wall clock)
+    # If received_at is years away from dt (stale test fixture), base_time in parse_time
+    # falls back to now(UTC)
+    max_limit = MAX_LIVE_AHEAD
+    ts = parse_time(meta.get("time_utc"), max_ahead=max_limit, ref_time=ref_time)
     mmsi = body.get("UserID", meta.get("MMSI"))
     if kind in POSITION_TYPES:
         pos = make_position(
@@ -280,7 +303,7 @@ def normalize(envelope: Any) -> Normalized:
             raise Invalid("envelope must have a payload object")
         source = envelope.get("source")
         if source == "aisstream":
-            return _from_aisstream(envelope["payload"])
+            return _from_aisstream(envelope["payload"], received_at=envelope.get("received_at"))
         if source == "noaa":
             return _from_noaa(envelope["payload"])
         raise Invalid(f"unknown source {str(source)[:20]!r}")

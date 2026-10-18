@@ -1,5 +1,6 @@
 """Report queries over the warehouse. "Now" is the newest loaded date, so a replayed 2023 day has a report."""
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -45,11 +46,26 @@ ORDER BY port_id
 """
 
 
+def _connect_read_only(
+    path: Path, max_retries: int = 5, base_delay: float = 0.05
+) -> duckdb.DuckDBPyConnection:
+    """Connect with retry backoff to handle transient lock contention from concurrent batch writes."""
+    for attempt in range(max_retries):
+        try:
+            return duckdb.connect(str(path), read_only=True)
+        except duckdb.Error as err:
+            if "lock" in str(err).lower() and attempt < max_retries - 1:
+                time.sleep(base_delay * (2**attempt))
+                continue
+            raise
+    return duckdb.connect(str(path), read_only=True)
+
+
 def _rows(path: Path, sql: str, *args: Any) -> list[dict[str, Any]]:
     """Run a read-only query; a warehouse the nightly job has not created yet has no rows."""
     if not path.is_file():
         return []
-    con = duckdb.connect(str(path), read_only=True)
+    con = _connect_read_only(path)
     try:
         cur = con.execute(sql, list(args))
         names = [c[0] for c in cur.description]

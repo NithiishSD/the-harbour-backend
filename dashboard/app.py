@@ -101,10 +101,15 @@ def warehouse_check(path: Path) -> Callable[[], str]:
     def check() -> str:
         if not path.is_file():
             return "empty"  # the nightly job has not run yet: nothing is broken
-        try:
-            duckdb.connect(str(path), read_only=True).close()
-        except duckdb.Error:
-            return "unavailable"
+        for attempt in range(3):
+            try:
+                duckdb.connect(str(path), read_only=True).close()
+                return "ok"
+            except duckdb.Error as err:
+                if "lock" in str(err).lower() and attempt < 2:
+                    time.sleep(0.05 * (2**attempt))
+                    continue
+                return "unavailable"
         return "ok"
 
     return check

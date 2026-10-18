@@ -60,11 +60,27 @@ def ship_at(i: int, at: datetime, start: datetime) -> tuple[float, float, int, f
     return lat, lon, heading if east else (heading + 180) % 360, speed
 
 
-def ship_messages(i: int, at: datetime, start: datetime) -> list[dict[str, Any]]:
+def ship_messages(
+    i: int, at: datetime, start: datetime, with_telemetry: bool = False
+) -> list[dict[str, Any]]:
     mmsi = FIRST_MMSI + i
     lat, lon, heading, speed = ship_at(i, at, start)
     name = f"{NAMES[i % len(NAMES)]} {i // len(NAMES) + 1}"
-    meta = {"MMSI": mmsi, "ShipName": name, "latitude": lat, "longitude": lon, "time_utc": ais_time(at)}
+    meta: dict[str, Any] = {
+        "MMSI": mmsi,
+        "ShipName": name,
+        "latitude": lat,
+        "longitude": lon,
+        "time_utc": ais_time(at),
+    }
+    if with_telemetry:
+        meta["telemetry"] = {
+            "engine_rpm": 95 + (i * 7) % 30,
+            "fuel_rate_lph": round(1200.5 + (i * 13) % 250, 1),
+            "coolant_temp_c": round(82.4 + (i * 3) % 10, 1),
+            "cargo_reefer_temp_c": round(-18.2 + (i * 2) % 4, 1),
+            "vibration_index": round(1.2 + (i * 0.3) % 1.5, 2),
+        }
     position = {
         "UserID": mmsi,
         "Latitude": lat,
@@ -138,15 +154,80 @@ def seed(sender: Sender, now: datetime) -> None:
     log.info("seeded", extra={"data": {"ships": SHIPS, "weather_points": len(lattice())}})
 
 
+def run_stress_benchmark(
+    sender: Sender, target_events: int = 50_000, multiplier: int = 50, batch_size: int = 1_000
+) -> float:
+    """Stress-test pipeline ingestion by multiplexing high-density vessel telemetry blocks."""
+    now = datetime.now(UTC)
+    start = now - timedelta(hours=HISTORY_H)
+    total_sent = 0
+    fleet_size = max(SHIPS, SHIPS * multiplier)
+    t0 = time.perf_counter()
+
+    log.info(
+        "starting stress benchmark",
+        extra={"data": {"target_events": target_events, "fleet_size": fleet_size, "batch_size": batch_size}},
+    )
+    print(
+        f"[STRESS BENCHMARK] Generating {target_events:,} high-density telemetry events "
+        f"across {fleet_size} virtual vessels..."
+    )
+
+    while total_sent < target_events:
+        batch_limit = min(batch_size, target_events - total_sent)
+        for _ in range(batch_limit):
+            ship_idx = total_sent % fleet_size
+            at = now - timedelta(seconds=(target_events - total_sent) * 0.1)
+            msg = ship_messages(ship_idx, at, start, with_telemetry=True)[0]
+            envelope = {"source": "aisstream", "received_at": at.isoformat(), "payload": msg}
+            sender.send(topics.RAW, str(FIRST_MMSI + ship_idx), envelope)
+            total_sent += 1
+        elapsed = time.perf_counter() - t0
+        current_rate = total_sent / elapsed if elapsed > 0 else 0
+        if total_sent % 10_000 == 0 or total_sent >= target_events:
+            print(
+                f"[STRESS BENCHMARK] Sent {total_sent:,}/{target_events:,} | Rate: {current_rate:,.0f} ev/s"
+            )
+
+    sender.flush(30)
+    elapsed = time.perf_counter() - t0
+    final_rate = total_sent / elapsed if elapsed > 0 else 0
+    print("\n=======================================================")
+    print(f"BENCHMARK COMPLETE: {total_sent:,} events in {elapsed:.2f}s ({final_rate:,.0f} events/sec)")
+    print(f"Multiplexed {fleet_size} virtual vessels with continuous engine & cargo telemetry")
+    print("=======================================================\n")
+    return final_rate
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--once", action="store_true", help="publish the history and the weather, then exit")
     parser.add_argument("--interval", type=float, default=60, help="seconds between position reports")
+    parser.add_argument(
+        "--stress",
+        action="store_true",
+        help="run high-throughput stress benchmark with multiplexed high-density telemetry",
+    )
+    parser.add_argument(
+        "--events", type=int, default=50_000, help="number of events to send in stress benchmark mode"
+    )
+    parser.add_argument(
+        "--multiplier", type=int, default=50, help="vessel fleet multiplier for high-density stress testing"
+    )
+    parser.add_argument("--batch-size", type=int, default=1_000, help="batch size for stress testing")
     args = parser.parse_args()
+
     topics.ensure_topics()
     producer = JsonProducer()
+
+    if args.stress:
+        run_stress_benchmark(
+            producer, target_events=args.events, multiplier=args.multiplier, batch_size=args.batch_size
+        )
+        return
+
     now = datetime.now(UTC)
     seed(producer, now)
     if args.once:
@@ -166,3 +247,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

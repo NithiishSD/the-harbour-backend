@@ -5,7 +5,16 @@ from common.lanes import corridor_boxes
 from common.route import lattice
 from common.schema import normalize
 from dashboard.weather import CYCLONE_WIND_KN, GridFeed
-from ingest.seed import FIRST_MMSI, SHIPS, publish_ships, seed, ship_at, static_message, weather_records
+from ingest.seed import (
+    FIRST_MMSI,
+    SHIPS,
+    publish_ships,
+    run_stress_benchmark,
+    seed,
+    ship_at,
+    static_message,
+    weather_records,
+)
 
 NOW = datetime(2026, 10, 10, 6, 30, tzinfo=UTC)
 
@@ -71,3 +80,22 @@ def test_default_live_boxes_cover_the_seed_ships():
     for i in range(SHIPS):
         lat, lon, _, _ = ship_at(i, NOW, NOW)
         assert any(a - 0.5 <= lat <= b + 0.5 and c - 0.5 <= lon <= d + 0.5 for a, c, b, d in boxes), i
+
+
+def test_run_stress_benchmark_emits_valid_telemetry():
+    sender = FakeSender()
+    rate = run_stress_benchmark(sender, target_events=100, multiplier=2, batch_size=25)
+    assert rate > 0
+    assert len(sender.sent) == 100
+    for topic, key, envelope in sender.sent:
+        assert topic == "ais.raw"
+        assert key.isdigit()
+        result = normalize(envelope)
+        assert result.reject is None
+        assert result.position is not None
+        # Telemetry metadata check
+        meta = envelope["payload"]["MetaData"]
+        assert "telemetry" in meta
+        assert "engine_rpm" in meta["telemetry"]
+        assert "cargo_reefer_temp_c" in meta["telemetry"]
+

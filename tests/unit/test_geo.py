@@ -93,3 +93,51 @@ def test_circle_ring_radius():
     assert ring[0] == ring[-1]
     for lon, lat in ring:
         assert abs(haversine_km(33.7, -118.2, lat, lon) - 2.0) < 0.05
+
+
+def test_zone_index_spatial_grid_and_dynamic_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    geo.settings.cache_clear()
+    try:
+        idx = ZoneIndex(load_zones())
+        # Point far away outside any port area
+        assert idx.lookup(0.0, 0.0) is None
+        assert idx.area_of(0.0, 0.0) is None
+
+        # Initially no learned anchorages file exists
+        assert idx.refresh_learned(tmp_path) is False
+
+        # Now simulate batch KMeans creating a learned anchorages file
+        learned = tmp_path / "geo" / "learned_anchorages.geojson"
+        learned.parent.mkdir(parents=True, exist_ok=True)
+        learned.write_text(
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {
+                                "port_id": "USLAX",
+                                "kind": "anchorage",
+                                "name": "dynamic-anch-1",
+                            },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [circle_ring(33.72, -118.25, 0.5)],
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+
+        # Dynamic refresh reloads the zones and updates the spatial grid
+        assert idx.refresh_learned(tmp_path) is True
+        # Calling again without file modification returns False
+        assert idx.refresh_learned(tmp_path) is False
+        names = {z.name for z in idx.zones}
+        assert "dynamic-anch-1" in names
+    finally:
+        geo.settings.cache_clear()
+

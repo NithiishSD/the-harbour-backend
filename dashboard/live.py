@@ -12,7 +12,7 @@ from typing import Any
 from common import lanes
 from common.config import settings
 from common.geo import Port, ZoneIndex, haversine_km
-from common.schema import MAX_AHEAD
+from common.schema import MAX_LIVE_AHEAD
 from dashboard import destination, voyage, waterway
 from storage.hbase.client import HBaseClient, Row
 from storage.hbase.tables import PORT_CALLS, PORT_QUEUE, VESSEL_STATE, VESSEL_TRACK, unrev
@@ -50,7 +50,7 @@ def ships(client: HBaseClient) -> list[dict[str, Any]]:
     map's clock and send every real ship to history.
     """
     out = []
-    latest = (datetime.now(UTC) + MAX_AHEAD).timestamp() * 1000
+    latest = (datetime.now(UTC) + MAX_LIVE_AHEAD).timestamp() * 1000
     for mmsi, row in client.scan_all(VESSEL_STATE, MAX_SHIPS):
         lat, lon = _num(row, "last:lat"), _num(row, "last:lon")
         if lat is None or lon is None:
