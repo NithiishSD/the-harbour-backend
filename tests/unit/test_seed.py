@@ -98,4 +98,3 @@ def test_run_stress_benchmark_emits_valid_telemetry():
         assert "telemetry" in meta
         assert "engine_rpm" in meta["telemetry"]
         assert "cargo_reefer_temp_c" in meta["telemetry"]
-

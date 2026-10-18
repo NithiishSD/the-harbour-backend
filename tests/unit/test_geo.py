@@ -140,4 +140,3 @@ def test_zone_index_spatial_grid_and_dynamic_refresh(tmp_path, monkeypatch):
         assert "dynamic-anch-1" in names
     finally:
         geo.settings.cache_clear()
-

@@ -136,7 +136,6 @@ def test_replay_positions_exempt_from_10_minute_guard():
     assert result.position is not None
 
 
-
 @pytest.mark.parametrize(
     ("code", "expected"),
     [(30, "fishing"), (52, "tug"), (65, "passenger"), (70, "cargo"), (89, "tanker"), (0, "unknown"),
