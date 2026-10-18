@@ -143,7 +143,7 @@ input[type="search"], select { background: var(--bg); border: 1px solid var(--li
 .alert .meta { font: 11px var(--mono); color: var(--muted); grid-column: 1 / -1; }
 .alert .text { overflow-wrap: anywhere; }
 
-.toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 2000; max-width: min(360px, calc(100vw - 32px)); pointer-events: none; }
+.toasts { display: none !important; position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 2000; max-width: min(360px, calc(100vw - 32px)); pointer-events: none; }
 .toast { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--high); border-radius: 6px; padding: 10px 12px; box-shadow: 0 4px 16px #0004; cursor: pointer; pointer-events: auto; display: grid; gap: 4px; transition: opacity 0.2s, transform 0.2s; }
 .toast.high, .toast.error { border-left-color: var(--high); }
 .toast.medium, .toast.warning { border-left-color: var(--medium); }

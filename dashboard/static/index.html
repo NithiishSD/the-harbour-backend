@@ -96,11 +96,11 @@
             <label>Dark ship <select id="prio-dark_ship"></select></label>
             <label>Queue growth <select id="prio-queue_growth"></select></label>
             <label>Notify me for <select id="notify-level">
+              <option value="off" selected>Nothing</option>
               <option value="high">High priority only</option>
               <option value="medium">Medium and high</option>
-              <option value="off">Nothing</option>
             </select></label>
-            <p class="hint">Alerts about a pinned ship are always high priority. Browser notifications need your permission the first time.</p>
+            <p class="hint">Alerts about a pinned ship are always high priority.</p>
           </div>
         </details>
         <ul id="alerts" class="alerts" aria-live="polite"></ul>

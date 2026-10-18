@@ -175,10 +175,9 @@ def clear_backlog(page: Page) -> None:
 def test_pushed_alert_raises_toast_and_can_be_acknowledged(page: Page, dashboard: Dashboard):
     clear_backlog(page)
     send_alert(dashboard)
-    toast = page.locator("#toasts .toast", has_text=dashboard.seed.anchored_name)
-    expect(toast).to_be_visible(timeout=WAIT)
-    expect(toast).to_contain_text("High priority")
     item = page.locator("#alerts .alert", has_text=dashboard.seed.anchored_name).first
+    expect(item).to_be_visible(timeout=WAIT)
+    expect(item).to_contain_text("High priority")
     item.get_by_role("button", name="Acknowledge").click()
     expect(item.get_by_role("button", name="Acknowledge")).to_have_count(0)
     page.reload()  # acknowledgement is remembered by the browser

@@ -106,7 +106,7 @@ const app = {
   pins: new Set(store.get('pins', [])),
   acked: new Set(store.get('acked', [])),
   prio: { dark_ship: 'high', queue_growth: 'medium', ...store.get('prio', {}) },
-  notify: store.get('notify', 'high'),
+  notify: store.get('notify', 'off'),
   prioFilter: new Set(PRIOS),
   filters: { q: '', states: new Set(STATES), group: 'all', type: '', port: '', pinned: false },
   limit: store.get('limit', LIMIT_DEFAULT),
@@ -517,27 +517,9 @@ function formatUserMessage(err, fallback = 'Service is temporarily unavailable')
   return msg;
 }
 
-function showToast({ title, message, type = 'info', duration = 8000, onClick = null }) {
-  const toasts = $('toasts');
-  if (!toasts) return null;
-  const p = type === 'high' || type === 'error' ? 'high' : type === 'medium' || type === 'warning' ? 'medium' : type;
-  const toast = h('div', { class: `toast ${p}`, role: 'status' });
-  if (onClick) {
-    toast.style.cursor = 'pointer';
-    toast.addEventListener('click', (e) => {
-      if (e.target.closest('.toast-close')) return;
-      onClick(e);
-      toast.remove();
-    });
-  }
-  const head = h('div', { class: 'toast-head' },
-    h('b', {}, title),
-    h('button', { type: 'button', class: 'toast-close', 'aria-label': 'Close notification', onclick: (e) => { e.stopPropagation(); toast.remove(); } }, '✕'),
-  );
-  toast.append(head, h('div', { class: 'toast-body' }, message));
-  toasts.append(toast);
-  if (duration > 0) setTimeout(() => toast.remove(), duration);
-  return toast;
+function showToast({ title, message, type = 'info', duration = 8000, onClick = null } = {}) {
+  // Notification popups disabled
+  return null;
 }
 
 function showModal({ title, content, actions = [] }) {
@@ -1284,21 +1266,7 @@ function ingest(a, live) {
   announce(a);
 }
 function announce(a) {
-  const p = prioOf(a);
-  const level = app.notify;
-  if (level === 'off' || (level === 'high' && p !== 'high')) return;
-  const title = `${p === 'high' ? 'High' : 'Medium'} priority: ${ALERT_TYPES[a.type] || a.type}`;
-  showToast({
-    title,
-    message: alertText(a),
-    type: p,
-    duration: 9000,
-    onClick: () => locate(a),
-  });
-  if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
-    const n = new Notification(title, { body: alertText(a), tag: a.alert_id });
-    n.onclick = () => { window.focus(); locate(a); };
-  }
+  // Notification popups disabled
 }
 async function loadAlerts() {
   try {
@@ -1337,12 +1305,13 @@ function initAlertControls() {
     sel.addEventListener('change', () => { app.prio[type] = sel.value; store.set('prio', app.prio); renderAlerts(); renderSummary(); });
   }
   const notify = $('notify-level');
-  notify.value = app.notify;
-  notify.addEventListener('change', () => {
-    app.notify = notify.value;
-    store.set('notify', app.notify);
-    if (app.notify !== 'off' && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
-  });
+  if (notify) {
+    notify.value = app.notify;
+    notify.addEventListener('change', () => {
+      app.notify = notify.value;
+      store.set('notify', app.notify);
+    });
+  }
   $('ack-all').addEventListener('click', () => ack([...app.alerts.keys()]));
 }
 
