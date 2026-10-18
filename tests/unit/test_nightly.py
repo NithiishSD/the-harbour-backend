@@ -23,3 +23,18 @@ def test_steps_run_in_order_and_an_existing_csv_is_not_downloaded(tmp_path: Path
     assert calls == [("backfill", "spark", str(csv)), "port_calls", ("learn", date(2023, 1, 1)), "load"]
     assert out["warehouse"] == {"fact_port_call": 2}
     assert (tmp_path / "w.duckdb").is_file()
+
+
+def test_available_and_loaded_dates(tmp_path: Path):
+    noaa_dir = tmp_path / "noaa" / "csv"
+    noaa_dir.mkdir(parents=True)
+    (noaa_dir / "AIS_2023_01_01_bbox.csv").write_text("x")
+    hist_dir = tmp_path / "history" / "positions" / "date=2026-10-10"
+    hist_dir.mkdir(parents=True)
+
+    avail = n.available_dates(tmp_path)
+    assert avail == [(date(2023, 1, 1), False), (date(2026, 10, 10), True)]
+
+    # Initially empty warehouse
+    w_path = tmp_path / "test_w.duckdb"
+    assert n.loaded_dates(w_path) == set()

@@ -13,6 +13,7 @@ Every step replaces only its own output for the date, so a failed night is repai
 """
 
 import argparse
+import contextlib
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -66,11 +67,97 @@ def nightly(
     return summary
 
 
+def available_dates(data_dir: Path) -> list[tuple[date, bool]]:
+    """Returns list of (day, is_live) available in data_dir."""
+    found: list[tuple[date, bool]] = []
+    # 1. NOAA CSVs (live=False)
+    noaa_dir = data_dir / "noaa" / "csv"
+    if noaa_dir.is_dir():
+        for p in sorted(noaa_dir.glob("AIS_*_bbox.csv")):
+            stem = p.name.replace("AIS_", "").replace("_bbox.csv", "")
+            with contextlib.suppress(ValueError):
+                found.append((date.fromisoformat(stem.replace("_", "-")), False))
+    # 2. Archived live history (live=True)
+    hist_dir = data_dir / "history" / "positions"
+    if hist_dir.is_dir():
+        for p in sorted(hist_dir.glob("date=*")):
+            val = p.name.split("=")[-1]
+            with contextlib.suppress(ValueError):
+                found.append((date.fromisoformat(val), True))
+    return sorted(set(found), key=lambda x: (x[0], x[1]))
+
+
+def loaded_dates(warehouse: Path) -> set[date]:
+    if not warehouse.is_file():
+        return set()
+    import duckdb
+
+    con = duckdb.connect(str(warehouse), read_only=True)
+    query = (
+        "SELECT DISTINCT date FROM dim_date WHERE date_key IN (SELECT DISTINCT date_key FROM fact_port_daily)"
+    )
+    try:
+        rows = con.execute(query).fetchall()
+        return {r[0] for r in rows if r[0] is not None}
+    except Exception:
+        return set()
+    finally:
+        con.close()
+
+
+def run_auto(data_dir: Path, warehouse: Path, bbox: noaa.BBox = DEFAULT_BBOX) -> list[dict[str, Any]]:
+    from datetime import UTC, datetime, timedelta
+
+    avail = available_dates(data_dir)
+    loaded = loaded_dates(warehouse)
+    results = []
+    for day, is_live in avail:
+        if day not in loaded:
+            log.info(
+                "auto nightly: processing day",
+                extra={"data": {"date": day.isoformat(), "live": is_live}},
+            )
+            try:
+                res = nightly(day, data_dir, warehouse, bbox=bbox, live=is_live)
+                results.append(res)
+            except Exception as err:
+                log.error(
+                    "auto nightly: failed for day",
+                    extra={"data": {"date": day.isoformat(), "error": str(err)}},
+                )
+
+    # Check yesterday if live feed was archived
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    yesterday_dir = data_dir / "history" / "positions" / f"date={yesterday.isoformat()}"
+    if yesterday_dir.is_dir() and yesterday not in loaded:
+        try:
+            res = nightly(yesterday, data_dir, warehouse, bbox=bbox, live=True)
+            results.append(res)
+        except Exception as err:
+            log.error(
+                "auto nightly: failed for yesterday",
+                extra={"data": {"date": yesterday.isoformat(), "error": str(err)}},
+            )
+    return results
+
+
 def main() -> None:
+    import time
+
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--date", required=True, type=date.fromisoformat)
+    parser.add_argument("--date", type=date.fromisoformat, help="specific date to process YYYY-MM-DD")
+    parser.add_argument(
+        "--auto", action="store_true", help="automatically detect and load un-processed dates"
+    )
+    parser.add_argument(
+        "--every",
+        type=float,
+        nargs="?",
+        const=86400,
+        help="repeat every this many seconds (default 86400 / 24h)",
+    )
     parser.add_argument(
         "--bbox", default=",".join(map(str, DEFAULT_BBOX)), help="min_lat,min_lon,max_lat,max_lon"
     )
@@ -80,7 +167,17 @@ def main() -> None:
     args = parser.parse_args()
     p = [float(x) for x in args.bbox.split(",")]
     cfg = settings()
-    nightly(args.date, cfg.data_dir, cfg.warehouse_path, (p[0], p[1], p[2], p[3]), args.live)
+    bbox: noaa.BBox = (p[0], p[1], p[2], p[3])
+
+    if args.auto or not args.date:
+        run_auto(cfg.data_dir, cfg.warehouse_path, bbox)
+        if args.every:
+            while True:
+                time.sleep(args.every)
+                run_auto(cfg.data_dir, cfg.warehouse_path, bbox)
+        return
+
+    nightly(args.date, cfg.data_dir, cfg.warehouse_path, bbox, args.live)
 
 
 if __name__ == "__main__":

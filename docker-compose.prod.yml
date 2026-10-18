@@ -62,7 +62,7 @@ services:
         condition: service_healthy
       hbase:
         condition: service_healthy
-    command: ["sh", "-c", "python -m common.topics && python -m storage.hbase.tables"]
+    command: ["sh", "-c", "python -m common.topics && python -m storage.hbase.tables && python -m storage.warehouse.load --init"]
     environment: &app-env
       KAFKA_BOOTSTRAP: kafka:19092
       HBASE_REST_URL: http://hbase:8080
@@ -175,6 +175,31 @@ services:
     volumes: *app-volumes
     mem_limit: 192m
 
+  # ── Automated Ingest (auto-detects live API key or loops NOAA demo replay) ───
+  ingest:
+    image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "ingest.auto"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 384m
+
+  # ── Automated Nightly Batch & Warehouse Loading (periodic auto-backfill) ─────
+  nightly:
+    image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "batch.nightly", "--auto", "--every", "${NIGHTLY_EVERY_S:-3600}"]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 3g
+
+  # ── Optional Manual Profiles ─────────────────────────────────────────────────
   follow:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     profiles: [live]
@@ -194,20 +219,10 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "ingest.replay", "--speed", "60"]
+    command: ["python", "-m", "ingest.replay", "--speed", "60", "--loop"]
     environment: *app-env
     volumes: *app-volumes
     mem_limit: 256m
-
-  nightly:
-    image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
-    profiles: [batch]
-    restart: "no"
-    depends_on: {}
-    command: ["python", "-m", "batch.nightly", "--date", "${NIGHTLY_DATE:-2026-10-10}", "--live"]
-    environment: *app-env
-    volumes: *app-volumes
-    mem_limit: 3g
 
 volumes:
   kafka-data:

@@ -130,27 +130,47 @@ def replay(records: Iterator[Record], sender: Sender, speed: float, limit: int |
 
 
 def main() -> None:
+    import glob
+
+    from common.config import settings
+
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    source = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=False)
     source.add_argument("--noaa", help="NOAA CSV path or glob")
     source.add_argument("--cold", type=Path, help="cold storage root for ais.raw")
     parser.add_argument("--from", dest="start", type=date.fromisoformat)
     parser.add_argument("--to", dest="end", type=date.fromisoformat)
     parser.add_argument("--speed", type=float, default=60, help="1-60 for paced replay, 0 for max speed")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--loop", action="store_true", help="repeat replay in a loop")
     args = parser.parse_args()
     if args.speed < 0 or args.speed > 60:
         parser.error("--speed must be between 0 (max) and 60")
-    if args.cold:
-        if not (args.start and args.end):
-            parser.error("--cold needs --from and --to")
-        records = cold_records(args.cold, args.start, args.end)
-    else:
-        records = noaa_records(args.noaa)
+
+    def _get_records() -> Iterator[Record]:
+        if args.cold:
+            if not (args.start and args.end):
+                parser.error("--cold needs --from and --to")
+            return cold_records(args.cold, args.start, args.end)
+        if args.noaa:
+            return noaa_records(args.noaa)
+        data_dir = settings().data_dir
+        noaa_files = sorted(glob.glob(str(Path(data_dir) / "noaa" / "csv" / "*.csv")))
+        if not noaa_files:
+            parser.error("No NOAA csv files found in data/noaa/csv; provide --noaa or --cold")
+        log.info("auto-selected noaa file for replay", extra={"data": {"file": noaa_files[0]}})
+        return noaa_records(noaa_files[0])
+
     topics.ensure_topics()
-    replay(records, JsonProducer(), args.speed, args.limit)
+    producer = JsonProducer()
+    while True:
+        replay(_get_records(), producer, args.speed, args.limit)
+        if not args.loop:
+            break
+        log.info("replay iteration finished, looping in 5 seconds...")
+        time.sleep(5)
 
 
 if __name__ == "__main__":

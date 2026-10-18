@@ -133,3 +133,22 @@ def load_date(
 def _count(con: duckdb.DuckDBPyConnection, table: str, where: str, arg: object) -> int:
     row = con.execute(f"SELECT count(*) FROM {table} WHERE {where}", [arg]).fetchone()  # noqa: S608 - fixed names
     return int(row[0]) if row else 0
+
+
+def main() -> None:
+    import argparse
+
+    from common.config import settings
+
+    parser = argparse.ArgumentParser(description="DuckDB Warehouse operations")
+    parser.add_argument("--init", action="store_true", help="Initialize warehouse tables")
+    args = parser.parse_args()
+    if args.init or len(sys.argv) == 1:
+        con = connect(settings().warehouse_path)
+        con.close()
+
+
+if __name__ == "__main__":
+    import sys
+
+    main()

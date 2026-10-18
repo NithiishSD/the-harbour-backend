@@ -74,8 +74,8 @@ docker compose run --rm init
 ok "Kafka topics and HBase tables initialized"
 
 # ── 4. Start Application Services ─────────────────────────────────────────────
-log "Starting streaming, API, weather, and frontend services..."
-docker compose up -d streaming dashboard frontend weather history
+log "Starting streaming, API, weather, frontend, ingest, and nightly batch services..."
+docker compose up -d streaming dashboard frontend weather history ingest nightly
 ok "All service containers launched"
 
 # ── 5. Run Health Checks ──────────────────────────────────────────────────────
@@ -103,10 +103,10 @@ if curl -sf http://127.0.0.1/health >/dev/null 2>&1; then
   ok "Nginx Frontend is healthy: http://127.0.0.1/health"
 fi
 
-# ── 6. Summary & Live Ingestion Option ────────────────────────────────────────
+# ── 6. Summary ────────────────────────────────────────────────────────────────
 echo ""
 echo "=========================================================================="
-echo "  HarbourWatch Demo Stack is Running!"
+echo "  HarbourWatch Automated Stack is Running!"
 echo "=========================================================================="
 echo "  Frontend Dashboard : http://localhost"
 echo "  FastAPI Swagger UI : http://localhost:8000/docs"
@@ -114,9 +114,6 @@ echo "  FastAPI Health     : http://localhost:8000/health"
 echo "  HBase Master UI    : http://localhost:16010"
 echo "  HBase REST Gateway : http://localhost:8080"
 echo ""
-echo "  To start live AIS ingestion:"
-echo "    docker compose --profile live up -d"
-echo ""
-echo "  To seed high-throughput demo data:"
-echo "    python -m ingest.seed --stress --events 10000"
+echo "  Automated Ingest   : Active (live if AISSTREAM_API_KEY set, else looping replay)"
+echo "  Automated DuckDB   : Active (nightly batch updates warehouse KPIs hourly)"
 echo "=========================================================================="
