@@ -1,97 +1,87 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# HarbourWatch — VM 2: Compute, Analytics & Application Stack (Portainer Ready)
-#
-# Services:
-#   1. init       - Automatic wait loop for VM1, creates topics/tables/warehouse,
-#                   fetches US maritime zones, auto-fetches demo NOAA if needed.
-#   2. streaming  - Spark Structured Streaming engine (8 continuous queries).
-#   3. dashboard  - FastAPI REST backend + Server-Sent Events alerts stream.
-#   4. frontend   - Nginx serving Leaflet dashboard UI, proxying /api to backend.
-#   5. ingest     - Automated AIS ingestion (live WebSocket if key present, else NOAA replay).
-#   6. weather    - Open-Meteo marine weather ingestion to Kafka.
-#   7. history    - Periodic cold Parquet archiver.
-#   8. nightly    - Periodic automated batch KPIs & DuckDB analytics.
-#
-# Deploy via Portainer:
-#   1. Go to Portainer on VM 2 -> Stacks -> Add stack.
-#   2. Name: harbourwatch-compute
-#   3. Paste this YAML into the Web editor.
-#   4. Under "Environment variables", set:
-#        VM1_PRIVATE_IP   = <private IP of VM 1, e.g. 10.0.0.5 or 172.31.20.10>
-#        AISSTREAM_API_KEY = <your live AIS key, or leave empty for automated NOAA demo>
-#   5. Click "Deploy the stack".
-# ─────────────────────────────────────────────────────────────────────────────
+# HarbourWatch — VM1 Compute, Analytics & Application Stack
+# Kafka and HBase run exclusively on VM2.
 name: harbourwatch-compute
 
 services:
-
-  # ── One-shot automated initialisation ───────────────────────────────────────
-  # Waits for VM1 Kafka and HBase to be healthy, creates schemas, downloads
-  # US maritime zones, and auto-provisions NOAA demo data if no live key is set.
+  # One-shot initialization: wait for VM2, then prepare app schemas.
   init:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: "no"
     command:
-      - "sh"
-      - "-c"
+      - sh
+      - -c
       - |
-        echo "[init] Starting automated initialization on VM 2..."
-        python -c '
-        import socket, time, urllib.request, os
+        set -e
+        echo "[init] Waiting for remote Kafka and HBase on VM2..."
 
-        k_boot = os.environ.get("KAFKA_BOOTSTRAP", "127.0.0.1:9092")
-        k_host, k_port = k_boot.split(":")
-        h_url = os.environ.get("HBASE_REST_URL", "http://127.0.0.1:8080").rstrip("/") + "/version/cluster"
+        python - <<'PY'
+        import os
+        import socket
+        import time
+        import urllib.request
 
-        print(f"[init] Waiting for Kafka broker on VM 1 at {k_host}:{k_port}...")
-        for attempt in range(1, 91):
-            try:
-                with socket.create_connection((k_host, int(k_port)), timeout=3):
-                    print(f"[init] Kafka broker is reachable (attempt {attempt})!")
-                    break
-            except Exception:
-                time.sleep(3)
-        else:
-            raise SystemExit(f"[init] Kafka broker at {k_host}:{k_port} unreachable after 270s")
+        bootstrap = os.environ["KAFKA_BOOTSTRAP"]
+        host, port = bootstrap.rsplit(":", 1)
+        hbase_url = os.environ["HBASE_REST_URL"].rstrip("/") + "/version/cluster"
 
-        print(f"[init] Waiting for HBase REST API on VM 1 at {h_url}...")
-        for attempt in range(1, 91):
-            try:
-                with urllib.request.urlopen(h_url, timeout=3) as resp:
-                    if resp.status == 200:
-                        print(f"[init] HBase REST API is healthy (attempt {attempt})!")
-                        break
-            except Exception:
-                time.sleep(3)
-        else:
-            raise SystemExit(f"[init] HBase REST API at {h_url} unreachable after 270s")
-        '
-        echo "[init] Creating Kafka topics..."
+        def wait_for_kafka():
+            for attempt in range(1, 91):
+                try:
+                    with socket.create_connection((host, int(port)), timeout=3):
+                        print(f"[init] Kafka reachable at {bootstrap}")
+                        return
+                except OSError as exc:
+                    if attempt == 90:
+                        raise SystemExit(f"Kafka unavailable at {bootstrap}: {exc}")
+                    time.sleep(3)
+
+        def wait_for_hbase():
+            for attempt in range(1, 91):
+                try:
+                    with urllib.request.urlopen(hbase_url, timeout=3) as response:
+                        if response.status == 200:
+                            print(f"[init] HBase reachable at {hbase_url}")
+                            return
+                except Exception as exc:
+                    if attempt == 90:
+                        raise SystemExit(f"HBase unavailable at {hbase_url}: {exc}")
+                    time.sleep(3)
+
+        wait_for_kafka()
+        wait_for_hbase()
+        PY
+
+        echo "[init] Ensuring Kafka topics exist..."
         python -m common.topics
-        echo "[init] Creating HBase table schemas..."
-        python -m storage.hbase.tables
-        echo "[init] Initializing DuckDB analytical warehouse..."
-        python -m storage.warehouse.load --init
-        echo "[init] Fetching maritime boundary zones for $${MONITOR_COUNTRY:-US}..."
-        python -m ingest.maritime_zones "$${MONITOR_COUNTRY:-US}" "$${MONITOR_ISO3:-USA}" || true
 
-        # If running in demo mode (no AIS key) and no local NOAA files exist, auto-fetch 1 day of sample data
-        if [ -z "$$AISSTREAM_API_KEY" ] && [ ! -d "/app/data/noaa/csv" ]; then
-            echo "[init] No AISSTREAM_API_KEY detected. Auto-downloading 1 day of NOAA sample data for US..."
-            python -m ingest.noaa --date 2024-01-01 --days 1 --bbox 24.0,-125.0,49.0,-66.0 || true
+        echo "[init] Ensuring HBase tables exist..."
+        python -m storage.hbase.tables
+
+        echo "[init] Initializing DuckDB schema..."
+        python -c "from common.config import settings; from storage.warehouse.load import connect; con = connect(settings().warehouse_path); con.close(); print('[init] DuckDB schema initialized')"
+
+        echo "[init] Fetching maritime zones..."
+        python -m ingest.maritime_zones "$${MONITOR_COUNTRY:-US}" "$${MONITOR_ISO3:-USA}" || echo "[init] Warning: maritime-zone fetch failed"
+
+        if [ -z "$${AISSTREAM_API_KEY}" ] && [ ! -d "/app/data/noaa/csv" ]; then
+          echo "[init] No AIS key or NOAA CSV directory found; attempting NOAA demo download..."
+          python -m ingest.noaa --date 2024-01-01 --days 1 --bbox 24.0,-125.0,49.0,-66.0 || echo "[init] Warning: NOAA demo download failed"
         fi
-        echo "[init] Initialization completed successfully!"
-    environment: &app-env
-      # ── Cross-VM Connectivity ──
-      KAFKA_BOOTSTRAP: ${VM1_PRIVATE_IP}:9092
-      HBASE_REST_URL: http://${VM1_PRIVATE_IP}:8080
+
+        echo "[init] Initialization completed."
+
+    environment:
+      # Remote infrastructure on VM2
+      &app-env
+      KAFKA_BOOTSTRAP: "${VM2_PRIVATE_IP:?Set VM2_PRIVATE_IP}:9092"
+      HBASE_REST_URL: "http://${VM2_PRIVATE_IP:?Set VM2_PRIVATE_IP}:8080"
       DATA_DIR: /app/data
 
-      # ── Ingestion & Coverage ──
+      # Ingestion
       AISSTREAM_API_KEY: ${AISSTREAM_API_KEY:-}
       LIVE_BBOX: ${LIVE_BBOX:--90.0,-180.0,90.0,180.0}
 
-      # ── High-Scale Monitoring Scope: US & Global ──
+      # Monitoring scope
       MONITOR_COUNTRY: ${MONITOR_COUNTRY:-US}
       MONITOR_ISO3: ${MONITOR_ISO3:-USA}
       MONITOR_PORTS: ${MONITOR_PORTS:-}
@@ -109,55 +99,54 @@ services:
       MONITOR_LEFT_KM: ${MONITOR_LEFT_KM:-30}
       MONITOR_SLOW_KN: ${MONITOR_SLOW_KN:-1.5}
 
-      # ── Alert Thresholds ──
+      # Alert thresholds
       DARK_TIMEOUT_HOURS: ${DARK_TIMEOUT_HOURS:-6}
       MIN_ACTIVE_SHIPS: ${MIN_ACTIVE_SHIPS:-3}
       QUEUE_GROWTH_PCT: ${QUEUE_GROWTH_PCT:-50}
       QUEUE_GROWTH_MIN: ${QUEUE_GROWTH_MIN:-5}
 
-      # ── Map Retention Times ──
+      # Map retention
       MAP_TRANSIT_HOURS: ${MAP_TRANSIT_HOURS:-24}
       MAP_ARRIVED_HOURS: ${MAP_ARRIVED_HOURS:-48}
       MAP_SILENT_HOURS: ${MAP_SILENT_HOURS:-48}
-
-      # ── Data Lifecycle Limits ──
       LIVE_SINCE: ${LIVE_SINCE:-2026-10-10}
+
+      # Data lifecycle
       HISTORY_MAX_MB: ${HISTORY_MAX_MB:-5120}
       COLD_MAX_MB: ${COLD_MAX_MB:-10240}
 
-      # ── Global Ship Following ──
+      # Vessel following and caching
       FOLLOW_MAX: ${FOLLOW_MAX:-500}
       FOLLOW_DAYS: ${FOLLOW_DAYS:-30}
       FOLLOW_REFRESH_S: ${FOLLOW_REFRESH_S:-300}
-
-      # ── Dashboard & API ──
       SHIPS_CACHE_S: ${SHIPS_CACHE_S:-5}
       HISTORY_EVERY_S: ${HISTORY_EVERY_S:-600}
       MONITOR_TIMEZONE: ${MONITOR_TIMEZONE:-}
+
     volumes: &app-volumes
       - app-data:/app/data
     mem_limit: 512m
 
-  # ── Spark Structured Streaming Engine ───────────────────────────────────────
+  # Spark Structured Streaming
   streaming:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "streaming.job", "--starting-offsets", "latest"]
+    command: [ "python", "-m", "streaming.job", "--starting-offsets", "latest" ]
     environment:
       <<: *app-env
-      SPARK_MASTER: ${STREAM_SPARK_MASTER:-local[*]}
+      SPARK_MASTER: ${STREAM_SPARK_MASTER:-local[2]}
       SPARK_DRIVER_MEMORY: ${STREAM_DRIVER_MEMORY:-2g}
-      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-16}
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-8}
       SPARK_UI: ${STREAM_SPARK_UI:-0}
       STREAM_TRIGGER_S: ${STREAM_TRIGGER_S:-5}
     volumes: *app-volumes
-    mem_limit: ${STREAM_MEM_LIMIT:-4g}
-    cpus: ${STREAM_CPUS:-4}
+    mem_limit: ${STREAM_MEM_LIMIT:-3g}
+    cpus: ${STREAM_CPUS:-2}
 
-  # ── FastAPI Dashboard & REST / SSE Gateway ──────────────────────────────────
+  # FastAPI backend; host-based Caddy can proxy to localhost:8000.
   dashboard:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
@@ -165,8 +154,8 @@ services:
       init:
         condition: service_completed_successfully
     ports:
-      - "0.0.0.0:8000:8000"
-    command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+      - "127.0.0.1:8000:8000"
+    command: [ "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000" ]
     environment: *app-env
     volumes: *app-volumes
     networks:
@@ -176,13 +165,13 @@ services:
     mem_limit: 512m
     cpus: 1
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=4)"]
+      test: [ "CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=4)" ]
       interval: 10s
       timeout: 5s
       start_period: 30s
       retries: 6
 
-  # ── Nginx Web Frontend (Leaflet UI + Reverse Proxy) ─────────────────────────
+  # Nginx frontend; host-based Caddy can proxy to localhost:8081.
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/nithiishsd/the-harbour-frontend:latest}
     restart: unless-stopped
@@ -190,101 +179,102 @@ services:
       dashboard:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "127.0.0.1:${FRONTEND_PORT:-8081}:80"
     mem_limit: 64m
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/ || exit 1"]
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1" ]
       interval: 10s
       timeout: 3s
       retries: 3
 
-  # ── History Archiver (cold Parquet -> replay history) ───────────────────────
+  # Parquet history archiver
   history:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "batch.archive_history", "--every"]
+    command: [ "python", "-m", "batch.archive_history", "--every" ]
     environment: *app-env
     volumes: *app-volumes
     mem_limit: 512m
     cpus: 1
 
-  # ── Marine Weather Ingestion (Open-Meteo -> Kafka) ─────────────────────────
+  # Marine weather ingestion
   weather:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "ingest.weather"]
+    command: [ "python", "-m", "ingest.weather" ]
     environment: *app-env
     volumes: *app-volumes
     mem_limit: 192m
 
-  # ── Automated Ingest (Live AIS WebSocket or NOAA Replay) ────────────────────
+  # Automatic AIS ingestion
   ingest:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "ingest.auto"]
+    command: [ "python", "-m", "ingest.auto" ]
     environment: *app-env
     volumes: *app-volumes
     mem_limit: 384m
 
-  # ── Automated Nightly Batch & Warehouse Analytics ───────────────────────────
-  nightly:
-    image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
-    restart: unless-stopped
-    depends_on:
-      init:
-        condition: service_completed_successfully
-    command: ["python", "-m", "batch.nightly", "--auto", "--every", "${NIGHTLY_EVERY_S:-3600}"]
-    environment: *app-env
-    volumes: *app-volumes
-    mem_limit: 3g
-
-  # ── Optional: Dedicated Live AIS Stream (profile: live) ─────────────────────
+  # Dedicated AIS stream: starts with the stack.
+  # Verify ingest.auto does not open a second AIS connection before running both.
   live:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
-    profiles: [live]
     restart: unless-stopped
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "ingest.aisstream"]
+    command: [ "python", "-m", "ingest.aisstream" ]
     environment: *app-env
     volumes: *app-volumes
     mem_limit: 192m
 
-  # ── Optional: Global Voyage Follower (profile: live) ────────────────────────
+  # Vessel follower
   follow:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
-    profiles: [live]
     restart: unless-stopped
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "ingest.follow"]
+    command: [ "python", "-m", "ingest.follow" ]
     environment: *app-env
     volumes: *app-volumes
     mem_limit: 256m
 
-  # ── Optional: Dedicated NOAA Replay (profile: demo) ─────────────────────────
+  # NOAA replay: runs continuously at 60x speed for demo testing.
   replay:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
-    profiles: [demo]
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: [ "python", "-m", "ingest.replay", "--speed", "60", "--loop" ]
+    environment: *app-env
+    volumes: *app-volumes
+    mem_limit: 256m
+
+  # Batch analytics: runs once for NIGHTLY_DATE, then exits.
+  nightly:
+    image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: "no"
     depends_on:
       init:
         condition: service_completed_successfully
-    command: ["python", "-m", "ingest.replay", "--speed", "60", "--loop"]
+    command: [ "python", "-m", "batch.nightly", "--date", "${NIGHTLY_DATE:-2024-01-01}" ]
     environment: *app-env
     volumes: *app-volumes
-    mem_limit: 256m
+    mem_limit: 2g
+    cpus: 1
 
 volumes:
   app-data:
+    external: true
+    name: ${APP_DATA_VOLUME:?Set APP_DATA_VOLUME to the existing VM1 volume}
