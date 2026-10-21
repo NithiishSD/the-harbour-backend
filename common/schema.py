@@ -269,27 +269,41 @@ def _from_aisstream(msg: dict[str, Any], received_at: str | None = None) -> Norm
 
 def _from_noaa(row: dict[str, Any]) -> Normalized:
     """NOAA MarineCadastre rows carry position and ship details together."""
-    ts = parse_time(row.get("BaseDateTime"))
+    raw_time = row.get("BaseDateTime") or row.get("base_date_time")
+    ts = parse_time(raw_time)
+    mmsi = row.get("MMSI") or row.get("mmsi")
+    lat = row.get("LAT") or row.get("latitude")
+    lon = row.get("LON") or row.get("longitude")
+    sog = row.get("SOG") or row.get("sog")
+    cog = row.get("COG") or row.get("cog")
+    heading = row.get("Heading") or row.get("heading")
+    status = row.get("Status") or row.get("status")
     pos = make_position(
-        row.get("MMSI"),
+        mmsi,
         ts,
-        row.get("LAT"),
-        row.get("LON"),
-        row.get("SOG"),
-        row.get("COG"),
-        row.get("Heading"),
-        row.get("Status"),
+        lat,
+        lon,
+        sog,
+        cog,
+        heading,
+        status,
         "noaa",
     )
+    v_name = row.get("VesselName") or row.get("vessel_name")
+    v_type = row.get("VesselType") or row.get("vessel_type")
+    length = row.get("Length") or row.get("length")
+    draft = row.get("Draft") or row.get("draft")
+    imo_raw = row.get("IMO") or row.get("imo")
+    callsign = row.get("CallSign") or row.get("call_sign")
     static = Static(
         mmsi=pos["mmsi"],
         ts=ts,
-        name=_text(row.get("VesselName")),
-        ship_type=ship_type(row.get("VesselType")),
-        length_m=_num(row.get("Length")) or None,
-        draught_m=_num(row.get("Draft")) or None,
-        imo=_text(str(row.get("IMO") or "").removeprefix("IMO")),
-        callsign=_text(row.get("CallSign")),
+        name=_text(v_name),
+        ship_type=ship_type(v_type),
+        length_m=_num(length) or None,
+        draught_m=_num(draft) or None,
+        imo=_text(str(imo_raw or "").removeprefix("IMO")),
+        callsign=_text(callsign),
         destination=None,
         eta=None,
     )
@@ -315,7 +329,7 @@ def key_of(envelope: dict[str, Any]) -> str | None:
     """Kafka key (MMSI as text) for a raw envelope, read without full validation."""
     payload = envelope.get("payload") or {}
     if envelope.get("source") == "noaa":
-        value = payload.get("MMSI")
+        value = payload.get("MMSI") or payload.get("mmsi")
     else:
         value = (payload.get("MetaData") or payload.get("Metadata") or {}).get("MMSI")
     return str(value) if value not in (None, "") else None

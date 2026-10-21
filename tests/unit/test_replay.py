@@ -33,6 +33,24 @@ def test_noaa_records_sorted_and_valid():
     assert n.reject is None and n.position is not None and n.position["ts"] == ts
 
 
+def test_noaa_records_snake_case_columns(tmp_path):
+    csv_file = tmp_path / "modern_noaa.csv"
+    csv_file.write_text(
+        "mmsi,base_date_time,latitude,longitude,sog,cog,heading,vessel_name\n"
+        "368126190,2024-01-01 00:01:15,43.65322,-70.25298,10.5,189.6,190,PILOT BOAT\n"
+        "368126190,2024-01-01 00:00:03,43.65322,-70.25298,0.0,358.8,359,PILOT BOAT\n"
+    )
+    records = list(noaa_records(str(csv_file)))
+    assert len(records) == 2
+    assert records[0][0] < records[1][0]
+    ts, env = records[0]
+    assert env["payload"]["base_date_time"] == "2024-01-01 00:00:03"
+    n = normalize(env)
+    assert n.reject is None
+    assert n.position is not None and n.position["mmsi"] == "368126190"
+    assert n.position["lat"] == 43.65322
+
+
 def test_replay_sends_keyed_raw_messages_and_respects_limit():
     sender = FakeSender()
     sent = replay(noaa_records(FIXTURE), sender, speed=0, limit=50)

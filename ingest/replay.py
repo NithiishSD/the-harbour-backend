@@ -37,15 +37,21 @@ def _now_iso() -> str:
 
 def noaa_records(path: str) -> Iterator[Record]:
     con = duckdb.connect()
-    cur = con.execute(
-        "SELECT * FROM read_csv(?, all_varchar = true, header = true) ORDER BY BaseDateTime", [path]
-    )
+    try:
+        cur = con.execute(
+            "SELECT * FROM read_csv(?, all_varchar = true, header = true) ORDER BY base_date_time", [path]
+        )
+    except duckdb.BinderException:
+        cur = con.execute(
+            "SELECT * FROM read_csv(?, all_varchar = true, header = true) ORDER BY BaseDateTime", [path]
+        )
     cols = [d[0] for d in cur.description]
     while batch := cur.fetchmany(10_000):
         for values in batch:
             row = dict(zip(cols, values, strict=True))
             try:
-                ts = parse_time(row.get("BaseDateTime"))
+                raw_time = row.get("base_date_time") or row.get("BaseDateTime")
+                ts = parse_time(raw_time)
             except ValueError:
                 ts = 0  # still sent: the streaming job rejects and counts it
             yield ts, {"source": "noaa", "received_at": _now_iso(), "payload": row}

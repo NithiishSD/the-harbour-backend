@@ -50,6 +50,13 @@ TYPES = {
 }  # fmt: skip
 
 
+def connect_duckdb() -> duckdb.DuckDBPyConnection:
+    """Use a writable directory for DuckDB temporary files."""
+    temp_dir = Path("/tmp/duckdb")  # noqa: S108
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return duckdb.connect(config={"temp_directory": str(temp_dir)})
+
+
 def _day(ts_ms: int) -> date:
     return datetime.fromtimestamp(ts_ms / 1000, UTC).date()
 
@@ -63,7 +70,7 @@ def envelopes(cold: Path, since: date | None, only: date | None) -> Any:
         where += f" AND date >= DATE '{since.isoformat()}'"
     if not any((cold / "topic=ais.raw").glob("date=*/*.parquet")):
         return
-    con = duckdb.connect()
+    con = connect_duckdb()
     cur = con.execute(
         f"SELECT decode(value, 'replace') FROM read_parquet(?, hive_partitioning = true) {where} "  # noqa: S608
         "ORDER BY kafka_ts",
@@ -112,7 +119,7 @@ def collect(
 def _existing(target: Path, columns: list[str]) -> list[dict[str, Any]]:
     if not target.is_file():
         return []
-    frame = duckdb.connect().execute("SELECT * FROM read_parquet(?)", [str(target)]).df()
+    frame = connect_duckdb().execute("SELECT * FROM read_parquet(?)", [str(target)]).df()
     frame = frame.astype(object).where(frame.notna(), None)
     return [{c: r.get(c) for c in columns} for r in frame.to_dict("records")]
 
@@ -128,7 +135,7 @@ def write(
     for row in [*_existing(target, columns), *rows]:
         merged[tuple(row[k] for k in key)] = row
     frame = pd.DataFrame(list(merged.values()), columns=columns)
-    con = duckdb.connect()
+    con = connect_duckdb()
     con.register("rows", frame)
     select = ", ".join(f"TRY_CAST({c} AS {TYPES.get(c, 'VARCHAR')}) AS {c}" for c in columns)
     tmp = target.with_suffix(".tmp")
