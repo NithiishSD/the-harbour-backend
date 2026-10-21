@@ -62,23 +62,18 @@ def download(day: date, dest: Path, base_url: str = BASE_URL, timeout: float = 6
     raise FileNotFoundError(f"Failed to download AIS data for {day}")
 
 
-
 def in_bbox(row: dict[str, str], bbox: BBox) -> bool:
     try:
-        normalized = {
-            key.strip().lower(): value
-            for key, value in row.items()
-        }
-        lat = float(normalized["latitude"])
-        lon = float(normalized["longitude"])
+        normalized = {key.strip().lower(): value for key, value in row.items()}
+        raw_lat = normalized.get("lat") or normalized.get("latitude")
+        raw_lon = normalized.get("lon") or normalized.get("longitude")
+        if raw_lat is None or raw_lon is None:
+            return False
+        lat, lon = float(raw_lat), float(raw_lon)
     except (KeyError, TypeError, ValueError):
         return False
 
-    return (
-        bbox[0] <= lat <= bbox[2]
-        and bbox[1] <= lon <= bbox[3]
-    )
-
+    return bbox[0] <= lat <= bbox[2] and bbox[1] <= lon <= bbox[3]
 
 
 def extract(source_path: Path, out_csv: Path, bbox: BBox | None = None) -> int:
