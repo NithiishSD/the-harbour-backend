@@ -1,4 +1,3 @@
-
 """Download daily NOAA AIS files and extract CSV, optionally clipped to a bounding box."""
 
 import argparse
@@ -10,6 +9,7 @@ import zipfile
 from contextlib import ExitStack
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import zstandard
 
@@ -26,29 +26,40 @@ def file_name(day: date) -> str:
     return f"AIS_{day:%Y_%m_%d}"
 
 
-def download(
-    day: date, dest: Path, base_url: str = BASE_URL, timeout: float = 60
-) -> Path:
+def download(day: date, dest: Path, base_url: str = BASE_URL, timeout: float = 60) -> Path:
     """Download the day's compressed AIS CSV, using an atomic temporary file."""
     dest.mkdir(parents=True, exist_ok=True)
 
-    target = dest / f"ais-{day:%Y-%m-%d}.csv.zst"
-    if target.is_file():
-        return target
+    target_zst = dest / f"ais-{day:%Y-%m-%d}.csv.zst"
+    if target_zst.is_file():
+        return target_zst
 
-    url = f"{base_url}/csv{day.year}/{target.name}"
-    part = target.with_suffix(target.suffix + ".part")
-    log.info("downloading", extra={"data": {"url": url}})
+    target_zip = dest / f"{file_name(day)}.zip"
+    if target_zip.is_file():
+        return target_zip
 
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            with part.open("wb") as out:
+    candidates = [
+        (f"{base_url}/csv{day.year}/{target_zst.name}", target_zst),
+        (f"{base_url}/{day.year}/{target_zip.name}", target_zip),
+    ]
+
+    last_error: Exception | None = None
+    for url, target in candidates:
+        part = target.with_suffix(target.suffix + ".part")
+        log.info("downloading", extra={"data": {"url": url}})
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response, part.open("wb") as out:  # noqa: S310
                 shutil.copyfileobj(response, out, length=1 << 20)
-        part.replace(target)
-    finally:
-        part.unlink(missing_ok=True)
+            part.replace(target)
+            return target
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            part.unlink(missing_ok=True)
+            last_error = exc
+            continue
 
-    return target
+    if last_error is not None:
+        raise last_error
+    raise FileNotFoundError(f"Failed to download AIS data for {day}")
 
 
 def in_bbox(row: dict[str, str], bbox: BBox) -> bool:
@@ -64,14 +75,10 @@ def extract(source_path: Path, out_csv: Path, bbox: BBox | None = None) -> int:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
     with ExitStack() as stack:
+        raw_stream: Any
         if source_path.name.endswith(".zst"):
             compressed = stack.enter_context(source_path.open("rb"))
-            stream = stack.enter_context(
-                zstandard.ZstdDecompressor().stream_reader(compressed)
-            )
-            text = stack.enter_context(
-                io.TextIOWrapper(stream, encoding="utf-8", newline="")
-            )
+            raw_stream = stack.enter_context(zstandard.ZstdDecompressor().stream_reader(compressed))
         else:
             archive = stack.enter_context(zipfile.ZipFile(source_path))
             member = next(
@@ -80,10 +87,9 @@ def extract(source_path: Path, out_csv: Path, bbox: BBox | None = None) -> int:
             )
             if member is None:
                 raise ValueError(f"No CSV file found inside {source_path}")
-            raw = stack.enter_context(archive.open(member))
-            text = stack.enter_context(
-                io.TextIOWrapper(raw, encoding="utf-8", newline="")
-            )
+            raw_stream = stack.enter_context(archive.open(member))
+
+        text = stack.enter_context(io.TextIOWrapper(raw_stream, encoding="utf-8", newline=""))
 
         with out_csv.open("w", newline="", encoding="utf-8") as out:
             if bbox is None:
@@ -94,14 +100,15 @@ def extract(source_path: Path, out_csv: Path, bbox: BBox | None = None) -> int:
                     writer.writerow(row)
                     rows += 1
                 return max(rows - 1, 0)
-            reader = csv.DictReader(text)
-            writer = csv.DictWriter(out, fieldnames=reader.fieldnames or [])
-            writer.writeheader()
+
+            dict_reader = csv.DictReader(text)
+            dict_writer = csv.DictWriter(out, fieldnames=dict_reader.fieldnames or [])
+            dict_writer.writeheader()
             rows = 0
 
-            for row in reader:
-                if in_bbox(row, bbox):
-                    writer.writerow(row)
+            for dict_row in dict_reader:
+                if in_bbox(dict_row, bbox):
+                    dict_writer.writerow(dict_row)
                     rows += 1
 
             return rows

@@ -7,6 +7,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+import zstandard
 
 from ingest.noaa import download, extract, file_name
 
@@ -21,6 +22,13 @@ def make_zip(tmp_path: Path) -> Path:
     return zip_path
 
 
+def make_zst(tmp_path: Path) -> Path:
+    zst_path = tmp_path / "ais-2023-01-01.csv.zst"
+    cctx = zstandard.ZstdCompressor()
+    zst_path.write_bytes(cctx.compress(FIXTURE.read_bytes()))
+    return zst_path
+
+
 def test_fixture_is_real_noaa_layout():
     with FIXTURE.open() as f:
         header = next(csv.reader(f))
@@ -31,6 +39,13 @@ def test_fixture_is_real_noaa_layout():
 def test_extract_full(tmp_path):
     out = tmp_path / "out.csv"
     rows = extract(make_zip(tmp_path), out)
+    assert rows == sum(1 for _ in FIXTURE.open()) - 1
+    assert out.read_text() == FIXTURE.read_text()
+
+
+def test_extract_zst_full(tmp_path):
+    out = tmp_path / "out.csv"
+    rows = extract(make_zst(tmp_path), out)
     assert rows == sum(1 for _ in FIXTURE.open()) - 1
     assert out.read_text() == FIXTURE.read_text()
 
