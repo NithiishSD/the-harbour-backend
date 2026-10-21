@@ -132,11 +132,19 @@ function apiUrl(path) {
 
 async function api(path, { method = 'GET', body: sent = null } = {}) {
   const headers = { Accept: 'application/json', ...(sent ? { 'Content-Type': 'application/json' } : {}) };
-  const r = await fetch(apiUrl(path), { method, headers, body: sent ? JSON.stringify(sent) : undefined, signal: AbortSignal.timeout(8000) });
+  const r = await fetch(apiUrl(path), { method, headers, body: sent ? JSON.stringify(sent) : undefined, signal: AbortSignal.timeout(20000) });
   let body = null;
   try { body = await r.json(); } catch { /* not JSON */ }
   if (!r.ok) throw Object.assign(new Error(body?.error?.message || `HTTP ${r.status}`), { code: body?.error?.code });
   return body;
+}
+
+function debounce(fn, ms = 400) {
+  let timer;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), ms);
+  };
 }
 
 /* ---------- formatting ---------- */
@@ -915,7 +923,7 @@ function renderPorts() {
         if (e.target.checked) next.add(info.port_id); else next.delete(info.port_id);
         if (!next.size) next.add(info.port_id); // never none
         m.ports = [...next];
-        saveSelection();
+        debouncedSaveSelection();
       } }));
     const card = on && byId.has(info.port_id) ? portCard(byId.get(info.port_id))
       : h('div', { class: 'port off' }, h('b', {}, info.name), h('small', {}, on ? 'loading…' : 'not monitored'));
@@ -986,14 +994,14 @@ function renderMonitor() {
   $('m-partners-list').replaceChildren(
     h('small', { class: 'muted' }, `Ships from these countries to ${countryName(m.country) || 'the monitored country'}, and back. Ticking a country makes the live feed listen to its coast.${m.basis ? ` Coverage: ${m.basis}.` : ''}`),
     h('div', { class: 'row-actions' },
-      h('button', { type: 'button', class: 'btn', onclick: () => { m.partners = [...m.suggested]; saveSelection(); } }, 'Use suggested'),
-      h('button', { type: 'button', class: 'btn', onclick: () => { m.partners = [...m.defaults.partners]; saveSelection(); } }, 'Back to default')),
+      h('button', { type: 'button', class: 'btn', onclick: () => { m.partners = [...m.suggested]; debouncedSaveSelection(); } }, 'Use suggested'),
+      h('button', { type: 'button', class: 'btn', onclick: () => { m.partners = [...m.defaults.partners]; debouncedSaveSelection(); } }, 'Back to default')),
     ...rows.map((c) => h('label', { class: `check cov ${c.covered >= 0.9 ? 'good' : c.covered >= 0.5 ? 'part' : 'poor'}` },
       h('input', { type: 'checkbox', checked: picked.has(c.country), disabled: !picked.has(c.country) && picked.size >= m.maxPartners, onchange: (e) => {
         const next = new Set(picked);
         if (e.target.checked) next.add(c.country); else next.delete(c.country);
         m.partners = [...next];
-        saveSelection();
+        debouncedSaveSelection();
       } }),
       ` ${countryName(c.country)} (${c.country}) · ${c.ships ? `${c.ships} ship${c.ships === 1 ? '' : 's'} seen · ` : ''}${Math.round(c.covered * 100)}% followed${c.gap_hours ? `, blind up to ${c.gap_hours} h` : ''}`,
       c.suggested ? h('span', { class: 'sug' }, ' ★ suggested') : null)));
@@ -1019,7 +1027,7 @@ function applyMonitor(cfg) {
   });
   renderMonitor();
   applyMonitorChips();
-  loadSuggestions(); // from the ships in the store: not waited for
+  debouncedLoadSuggestions(); // from the ships in the store: not waited for
 }
 async function loadSuggestions() {
   const m = app.monitor;
@@ -1030,6 +1038,9 @@ async function loadSuggestions() {
     renderMonitor();
   } catch { /* the list stays without the counts */ }
 }
+const debouncedSaveSelection = debounce(saveSelection, 400);
+const debouncedLoadSuggestions = debounce(loadSuggestions, 300);
+
 /* The choice is the server's (it also steers the live feed): save it, then show what the server holds. */
 async function saveSelection() {
   const m = app.monitor;

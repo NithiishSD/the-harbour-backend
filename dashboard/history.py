@@ -61,7 +61,9 @@ class HistoryStore:
         self.root = root
         self.zones = zones
         self.ports = ports
-        self._con = duckdb.connect()
+        temp_dir = Path("/tmp/duckdb")  # noqa: S108
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        self._con = duckdb.connect(config={"temp_directory": str(temp_dir)})
         self._lock = threading.Lock()  # one query at a time on the shared connection
 
     # ---- helpers --------------------------------------------------------------------------------

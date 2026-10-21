@@ -268,7 +268,7 @@ def create_app(
 
         The scan of HBase and the work on every ship is shared: one answer is kept for SHIPS_CACHE_S and
         handed (as copies) to every request in that time, so the cost does not grow with the viewers."""
-        ttl = settings().ships_cache_s if locked else 0.0
+        ttl = settings().ships_cache_s if (locked or settings().ships_cache_s > 0) else 0.0
         if ttl <= 0:
             return scan_ships()
         with scan_lock:  # concurrent requests wait for one scan instead of each doing their own
@@ -388,14 +388,31 @@ def create_app(
             chosen_partners = frozenset(codes) - {chosen}
         return Monitor.build(world_ports, chosen, wanted, tuple(chosen_partners), env.region_km)
 
-    voyages_seen: list[tuple[float, Any]] = []  # (when, ships) for the suggestions
+    suggestions_lock = threading.Lock()
+    suggestions_cache: dict[
+        tuple[str, tuple[str, ...]],
+        tuple[float, tuple[tuple[str, ...], dict[str, int]]],
+    ] = {}
 
     def suggestions(watch: Monitor) -> tuple[tuple[str, ...], dict[str, int]]:
         """The source countries to follow, and how many ships were seen on voyages with each."""
-        if not voyages_seen or time.monotonic() - voyages_seen[0][0] > GOING_TTL_S:
-            voyages_seen[:] = [(time.monotonic(), live.ships(hbase))]
-        ships = voyages_seen[0][1]
-        return suggest_partners(world_ports, watch, ships), dict(watch.voyages(ships, world_ports))
+        ttl = settings().ships_cache_s
+        key = (watch.country, tuple(sorted(watch.ports)))
+        now = time.monotonic()
+        if ttl > 0:
+            with suggestions_lock:
+                cached = suggestions_cache.get(key)
+                if cached is not None and now - cached[0] < GOING_TTL_S:
+                    return cached[1]
+
+        rows, _, _ = ship_rows()
+        res = (suggest_partners(world_ports, watch, rows), dict(watch.voyages(rows, world_ports)))
+        if ttl > 0:
+            with suggestions_lock:
+                if len(suggestions_cache) > 50:
+                    suggestions_cache.clear()
+                suggestions_cache[key] = (time.monotonic(), res)
+        return res
 
     @app.get("/api/monitor")
     def monitor_config(
@@ -539,6 +556,8 @@ def create_app(
         ]
         watch = monitor_of(None, ",".join(ids), ",".join(c.upper() for c in body.partners))
         selection.save(settings().data_dir, watch.country, list(watch.ports), sorted(watch.partners))
+        with suggestions_lock:
+            suggestions_cache.clear()
         return monitor_config(None, "")
 
     @app.get("/api/ports")
@@ -697,6 +716,9 @@ def create_app(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    ships_cache_lock = threading.Lock()
+    ships_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
+
     @app.get("/api/ships")
     def ships(
         port_id: str | None = None,
@@ -716,6 +738,14 @@ def create_app(
         the same where the dashboard is not held to its country (tests, library use)."""
         if port_id is not None:
             port_or_404(port_id)
+        ttl = settings().ships_cache_s
+        cache_key = (port_id, state, pinned, show, limit, tracked, country, ports, partners)
+        now_ts = time.monotonic()
+        if ttl > 0:
+            with ships_cache_lock:
+                cached = ships_cache.get(cache_key)
+                if cached is not None and now_ts - cached[0] < ttl:
+                    return [dict(s) for s in cached[1]]
         rows, now, _ = ship_rows()
         if tracked or locked:  # the dashboard shows only the monitoring's ships: never "everyone"
             watch = monitor_of(country, ports, partners)
@@ -729,11 +759,17 @@ def create_app(
         drawn = mapview.on_map(
             rows, now, dark, set(filter(None, pinned.split(","))), set(filter(None, show.split(","))), limit
         )
-        return [
+        res = [
             s
             for s in drawn
             if (port_id is None or s["port"] == port_id) and (state is None or s["state"] == state)
         ]
+        if ttl > 0:
+            with ships_cache_lock:
+                if len(ships_cache) > 50:
+                    ships_cache.clear()
+                ships_cache[cache_key] = (time.monotonic(), res)
+        return res
 
     @app.get("/api/ships/search")
     def ship_search(q: Annotated[str, Query(min_length=2, max_length=40)]) -> list[dict[str, Any]]:

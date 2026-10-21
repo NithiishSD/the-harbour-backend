@@ -1,9 +1,20 @@
-# HarbourWatch — VM1 Compute, Analytics & Application Stack
-# Kafka and HBase run exclusively on VM2.
+# ─────────────────────────────────────────────────────────────────────────────
+# HarbourWatch — VM 1: Compute, Analytics & Application Stack (Portainer Ready)
+#
+# Storage infrastructure (Kafka + HBase) runs on VM 2.
+# Deploy via Portainer on VM 1:
+#   1. Go to Portainer on VM 1 -> Stacks -> Add stack.
+#   2. Name: harbourwatch-compute
+#   3. Paste this YAML into the Web editor.
+#   4. Under "Environment variables", add:
+#        VM2_PRIVATE_IP = <private IP of VM 2, e.g. 10.0.0.6 or 172.31.20.20>
+#        AISSTREAM_API_KEY = <your aisstream.io key (optional, falls back to NOAA demo)>
+#   5. Click "Deploy the stack".
+# ─────────────────────────────────────────────────────────────────────────────
 name: harbourwatch-compute
 
 services:
-  # One-shot initialization: wait for VM2, then prepare app schemas.
+  # One-shot initialization: waits for VM 2 storage, then provisions schemas & geo data
   init:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: "no"
@@ -12,7 +23,7 @@ services:
       - -c
       - |
         set -e
-        echo "[init] Waiting for remote Kafka and HBase on VM2..."
+        echo "[init] Waiting for remote Kafka and HBase on VM 2 (${STORAGE_HOST})..."
 
         python - <<'PY'
         import os
@@ -25,6 +36,7 @@ services:
         hbase_url = os.environ["HBASE_REST_URL"].rstrip("/") + "/version/cluster"
 
         def wait_for_kafka():
+            print(f"[init] Checking Kafka connection to {bootstrap}...")
             for attempt in range(1, 91):
                 try:
                     with socket.create_connection((host, int(port)), timeout=3):
@@ -32,10 +44,11 @@ services:
                         return
                 except OSError as exc:
                     if attempt == 90:
-                        raise SystemExit(f"Kafka unavailable at {bootstrap}: {exc}")
+                        raise SystemExit(f"Kafka unavailable at {bootstrap} after 90 attempts: {exc}")
                     time.sleep(3)
 
         def wait_for_hbase():
+            print(f"[init] Checking HBase REST connection to {hbase_url}...")
             for attempt in range(1, 91):
                 try:
                     with urllib.request.urlopen(hbase_url, timeout=3) as response:
@@ -44,7 +57,7 @@ services:
                             return
                 except Exception as exc:
                     if attempt == 90:
-                        raise SystemExit(f"HBase unavailable at {hbase_url}: {exc}")
+                        raise SystemExit(f"HBase unavailable at {hbase_url} after 90 attempts: {exc}")
                     time.sleep(3)
 
         wait_for_kafka()
@@ -57,24 +70,25 @@ services:
         echo "[init] Ensuring HBase tables exist..."
         python -m storage.hbase.tables
 
-        echo "[init] Initializing DuckDB schema..."
+        echo "[init] Initializing DuckDB warehouse schema..."
         python -c "from common.config import settings; from storage.warehouse.load import connect; con = connect(settings().warehouse_path); con.close(); print('[init] DuckDB schema initialized')"
 
         echo "[init] Fetching maritime zones..."
-        python -m ingest.maritime_zones "$${MONITOR_COUNTRY:-US}" "$${MONITOR_ISO3:-USA}" || echo "[init] Warning: maritime-zone fetch failed"
+        python -m ingest.maritime_zones "$${MONITOR_COUNTRY:-US}" "$${MONITOR_ISO3:-USA}" || echo "[init] Warning: maritime-zone fetch failed, using default boundaries"
 
         if [ -z "$${AISSTREAM_API_KEY}" ] && [ ! -d "/app/data/noaa/csv" ]; then
           echo "[init] No AIS key or NOAA CSV directory found; attempting NOAA demo download..."
           python -m ingest.noaa --date 2024-01-01 --days 1 --bbox 24.0,-125.0,49.0,-66.0 || echo "[init] Warning: NOAA demo download failed"
         fi
 
-        echo "[init] Initialization completed."
+        echo "[init] Initialization completed successfully."
 
     environment:
-      # Remote infrastructure on VM2
+      # Remote storage infrastructure on VM 2
       &app-env
-      KAFKA_BOOTSTRAP: "${VM2_PRIVATE_IP:?Set VM2_PRIVATE_IP}:9092"
-      HBASE_REST_URL: "http://${VM2_PRIVATE_IP:?Set VM2_PRIVATE_IP}:8080"
+      STORAGE_HOST: "${VM2_PRIVATE_IP:-${STORAGE_IP:-127.0.0.1}}"
+      KAFKA_BOOTSTRAP: "${VM2_PRIVATE_IP:-${STORAGE_IP:-127.0.0.1}}:9092"
+      HBASE_REST_URL: "http://${VM2_PRIVATE_IP:-${STORAGE_IP:-127.0.0.1}}:8080"
       DATA_DIR: /app/data
 
       # Ingestion
@@ -115,7 +129,7 @@ services:
       HISTORY_MAX_MB: ${HISTORY_MAX_MB:-5120}
       COLD_MAX_MB: ${COLD_MAX_MB:-10240}
 
-      # Vessel following and caching
+      # Vessel following and backend caching
       FOLLOW_MAX: ${FOLLOW_MAX:-500}
       FOLLOW_DAYS: ${FOLLOW_DAYS:-30}
       FOLLOW_REFRESH_S: ${FOLLOW_REFRESH_S:-300}
@@ -146,7 +160,7 @@ services:
     mem_limit: ${STREAM_MEM_LIMIT:-3g}
     cpus: ${STREAM_CPUS:-2}
 
-  # FastAPI backend; host-based Caddy can proxy to localhost:8000.
+  # FastAPI backend — 2 workers prevent event-loop starvation and 502 Bad Gateway
   dashboard:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
@@ -154,16 +168,16 @@ services:
       init:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:8000:8000"
-    command: [ "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000" ]
+      - "0.0.0.0:8000:8000"
+    command: [ "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "65" ]
     environment: *app-env
     volumes: *app-volumes
     networks:
       default:
         aliases:
           - backend
-    mem_limit: 512m
-    cpus: 1
+    mem_limit: 1024m
+    cpus: 2
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=4)" ]
       interval: 10s
@@ -171,7 +185,7 @@ services:
       start_period: 30s
       retries: 6
 
-  # Nginx frontend; host-based Caddy can proxy to localhost:8081.
+  # Nginx frontend — serves Leaflet UI and reverse proxies /api requests to dashboard
   frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/nithiishsd/the-harbour-frontend:latest}
     restart: unless-stopped
@@ -179,8 +193,8 @@ services:
       dashboard:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-8081}:80"
-    mem_limit: 64m
+      - "0.0.0.0:${FRONTEND_PORT:-80}:80"
+    mem_limit: 128m
     healthcheck:
       test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1" ]
       interval: 10s
@@ -224,8 +238,7 @@ services:
     volumes: *app-volumes
     mem_limit: 384m
 
-  # Dedicated AIS stream: starts with the stack.
-  # Verify ingest.auto does not open a second AIS connection before running both.
+  # Dedicated AIS stream
   live:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
@@ -249,7 +262,7 @@ services:
     volumes: *app-volumes
     mem_limit: 256m
 
-  # NOAA replay: runs continuously at 60x speed for demo testing.
+  # NOAA replay: runs continuously at 60x speed for demo testing
   replay:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: unless-stopped
@@ -261,7 +274,7 @@ services:
     volumes: *app-volumes
     mem_limit: 256m
 
-  # Batch analytics: runs once for NIGHTLY_DATE, then exits.
+  # Batch analytics: runs once for NIGHTLY_DATE, then exits
   nightly:
     image: ${APP_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-backend:latest}
     restart: "no"
@@ -276,5 +289,3 @@ services:
 
 volumes:
   app-data:
-    external: true
-    name: ${APP_DATA_VOLUME:?Set APP_DATA_VOLUME to the existing VM1 volume}
