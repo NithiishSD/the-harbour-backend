@@ -126,14 +126,14 @@ services:
       LIVE_SINCE: ${LIVE_SINCE:-2026-10-10}
 
       # Data lifecycle
-      HISTORY_MAX_MB: ${HISTORY_MAX_MB:-5120}
-      COLD_MAX_MB: ${COLD_MAX_MB:-10240}
+      HISTORY_MAX_MB: ${HISTORY_MAX_MB:-1024}
+      COLD_MAX_MB: ${COLD_MAX_MB:-2048}
 
       # Vessel following and backend caching
-      FOLLOW_MAX: ${FOLLOW_MAX:-500}
-      FOLLOW_DAYS: ${FOLLOW_DAYS:-30}
+      FOLLOW_MAX: ${FOLLOW_MAX:-200}
+      FOLLOW_DAYS: ${FOLLOW_DAYS:-14}
       FOLLOW_REFRESH_S: ${FOLLOW_REFRESH_S:-300}
-      SHIPS_CACHE_S: ${SHIPS_CACHE_S:-5}
+      SHIPS_CACHE_S: ${SHIPS_CACHE_S:-2}
       HISTORY_EVERY_S: ${HISTORY_EVERY_S:-600}
       MONITOR_TIMEZONE: ${MONITOR_TIMEZONE:-}
 
@@ -152,12 +152,12 @@ services:
     environment:
       <<: *app-env
       SPARK_MASTER: ${STREAM_SPARK_MASTER:-local[2]}
-      SPARK_DRIVER_MEMORY: ${STREAM_DRIVER_MEMORY:-2g}
-      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-8}
+      SPARK_DRIVER_MEMORY: ${STREAM_DRIVER_MEMORY:-1g}
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-4}
       SPARK_UI: ${STREAM_SPARK_UI:-0}
       STREAM_TRIGGER_S: ${STREAM_TRIGGER_S:-5}
     volumes: *app-volumes
-    mem_limit: ${STREAM_MEM_LIMIT:-3g}
+    mem_limit: ${STREAM_MEM_LIMIT:-2g}
     cpus: ${STREAM_CPUS:-2}
 
   # FastAPI backend — 2 workers prevent event-loop starvation and 502 Bad Gateway
@@ -169,15 +169,15 @@ services:
         condition: service_completed_successfully
     ports:
       - "0.0.0.0:8000:8000"
-    command: [ "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "65" ]
+    command: [ "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${DASHBOARD_WORKERS:-2}", "--timeout-keep-alive", "65" ]
     environment: *app-env
     volumes: *app-volumes
     networks:
       default:
         aliases:
           - backend
-    mem_limit: 1024m
-    cpus: 2
+    mem_limit: ${DASHBOARD_MEM_LIMIT:-1024m}
+    cpus: ${DASHBOARD_CPUS:-1}
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=4)" ]
       interval: 10s

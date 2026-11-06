@@ -26,6 +26,7 @@ class Settings:
     kafka_bootstrap: str
     hbase_rest_url: str
     aisstream_api_key: str
+    aisstream_url: str
     data_dir: Path
     geo_dir: Path
     # Live areas as (min_lat, min_lon, max_lat, max_lon); empty means the boxes along the sea route
@@ -93,6 +94,7 @@ def settings() -> Settings:
         kafka_bootstrap=env("KAFKA_BOOTSTRAP", "localhost:9092"),
         hbase_rest_url=env("HBASE_REST_URL", "http://localhost:8080").rstrip("/"),
         aisstream_api_key=env("AISSTREAM_API_KEY", ""),
+        aisstream_url=env("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream"),
         data_dir=Path(env("DATA_DIR", str(ROOT / "data"))),
         geo_dir=Path(env("GEO_DIR", str(ROOT / "geo"))),
         live_bboxes=_bboxes(env("LIVE_BBOX", "")),

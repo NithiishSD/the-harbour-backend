@@ -69,10 +69,10 @@ async def run_live(s: Any) -> None:
         except Exception:
             return []
 
-    log.info("starting live regional stream and voyage follower")
-    regional_task = asyncio.create_task(run_aisstream(URL, s.aisstream_api_key, boxes, producer))
+    log.info("starting live regional stream and voyage follower", extra={"data": {"url": s.aisstream_url}})
+    regional_task = asyncio.create_task(run_aisstream(s.aisstream_url, s.aisstream_api_key, boxes, producer))
     follow_task = asyncio.create_task(
-        run_aisstream(URL, s.aisstream_api_key, WORLD, producer, follow=follow_listing)
+        run_aisstream(s.aisstream_url, s.aisstream_api_key, WORLD, producer, follow=follow_listing)
     )
     await asyncio.gather(regional_task, follow_task)
 

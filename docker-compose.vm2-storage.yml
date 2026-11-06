@@ -17,7 +17,7 @@ services:
   kafka:
     image: apache/kafka:4.3.1
     restart: unless-stopped
-    mem_limit: 1024m
+    mem_limit: ${KAFKA_MEM_LIMIT:-768m}
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -55,7 +55,7 @@ services:
   hbase:
     image: ${HBASE_IMAGE:-ghcr.io/nithiishsd/the-harbour-backend-hbase:2.6.7}
     restart: unless-stopped
-    mem_limit: 2048m
+    mem_limit: ${HBASE_MEM_LIMIT:-1536m}
     ports:
       # REST gateway: VM 1 reads/writes here over private IP
       - "0.0.0.0:8080:8080"

@@ -482,7 +482,7 @@ def create_app(
     def coverage_picture(
         country: Annotated[str | None, Query(max_length=2)] = None,
         ports: Annotated[str, Query(max_length=200)] = "",
-        partners: Annotated[str | None, Query(max_length=60)] = None,
+        partners: Annotated[str | None, Query(max_length=500)] = None,
     ) -> dict[str, Any]:
         """What the monitoring can see, to draw: the waters whose ships are shown, the area the live feed
         listens to, where AIS was heard at all (the survey) and the stretches of the voyages to the source
@@ -612,7 +612,7 @@ def create_app(
         tracked: bool = False,
         country: Annotated[str | None, Query(max_length=2)] = None,
         ports: Annotated[str, Query(max_length=200)] = "",
-        partners: Annotated[str | None, Query(max_length=60)] = None,
+        partners: Annotated[str | None, Query(max_length=500)] = None,
     ) -> list[dict[str, Any]]:
         """Where the ships were at a past time: the newest report of each within `window_min` before it, or
         the newest report of the one ship `mmsi` whatever its age. `tracked` as in /api/ships (the history
@@ -662,7 +662,7 @@ def create_app(
     def sea_lanes(
         country: Annotated[str | None, Query(max_length=2)] = None,
         ports: Annotated[str, Query(max_length=200)] = "",
-        partners: Annotated[str | None, Query(max_length=60)] = None,
+        partners: Annotated[str | None, Query(max_length=500)] = None,
     ) -> dict[str, Any]:
         """The sea lanes and ports of this monitoring's voyages, and no others: the monitored ports, the
         partner countries' ports and the countries the country's own ships were seen to sail to."""
@@ -729,7 +729,7 @@ def create_app(
         tracked: bool = False,
         country: Annotated[str | None, Query(max_length=2)] = None,
         ports: Annotated[str, Query(max_length=200)] = "",
-        partners: Annotated[str | None, Query(max_length=60)] = None,
+        partners: Annotated[str | None, Query(max_length=500)] = None,
     ) -> list[dict[str, Any]]:
         """The ships on the live map (see dashboard.mapview): pinned and shown ones are kept regardless.
 

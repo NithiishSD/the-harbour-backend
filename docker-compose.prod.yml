@@ -115,9 +115,11 @@ services:
       <<: *app-env
       SPARK_MASTER: ${STREAM_SPARK_MASTER:-local[2]}
       SPARK_DRIVER_MEMORY: ${STREAM_DRIVER_MEMORY:-1g}
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-4}
       SPARK_UI: ${STREAM_SPARK_UI:-0}
+      STREAM_TRIGGER_S: ${STREAM_TRIGGER_S:-5}
     volumes: *app-volumes
-    mem_limit: ${STREAM_MEM_LIMIT:-3g}
+    mem_limit: ${STREAM_MEM_LIMIT:-2g}
     cpus: ${STREAM_CPUS:-2}
 
   dashboard:
@@ -128,11 +130,11 @@ services:
         condition: service_completed_successfully
     ports:
       - "0.0.0.0:8000:8000"
-    command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${DASHBOARD_WORKERS:-2}", "--timeout-keep-alive", "65"]
     environment: *app-env
     volumes: *app-volumes
-    mem_limit: 512m
-    cpus: 1
+    mem_limit: ${DASHBOARD_MEM_LIMIT:-1024m}
+    cpus: ${DASHBOARD_CPUS:-1}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=4)"]
       interval: 10s

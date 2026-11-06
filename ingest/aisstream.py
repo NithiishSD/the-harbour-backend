@@ -8,6 +8,7 @@ producer reconnects with exponential backoff. The API key is sent once per conne
 
 import asyncio
 import json
+import os
 import random
 import time
 from collections.abc import Callable, Sequence
@@ -26,7 +27,7 @@ from common.monitor import Monitor
 from common.schema import key_of
 from ingest.replay import Sender
 
-URL = "wss://stream.aisstream.io/v0/stream"
+URL = os.environ.get("AISSTREAM_URL", "wss://stream.aisstream.io/v0/stream")
 MESSAGE_TYPES = [
     "PositionReport",
     "StandardClassBPositionReport",
